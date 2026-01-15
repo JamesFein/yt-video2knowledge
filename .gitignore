@@ -1,0 +1,9 @@
+# youtube-ai-digest data
+data/
+!data/channels.json
+__pycache__/
+*.pyc
+.DS_Store
+*.png
+*.jpg
+*.webp

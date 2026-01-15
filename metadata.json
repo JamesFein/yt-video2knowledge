@@ -1,0 +1,18 @@
+{
+  "name": "youtube-ai-digest",
+  "version": "1.0.0",
+  "description": "Browse, summarize and capture AI-related YouTube videos from subscribed channels. Generates Markdown reports with thumbnails and screenshots.",
+  "author": "User",
+  "dependencies": {
+    "python": ">=3.9",
+    "pip_packages": ["yt-dlp", "youtube-transcript-api"]
+  },
+  "platforms": ["macOS", "Linux"],
+  "tags": ["youtube", "ai", "summary", "video", "automation"],
+  "triggers": [
+    "youtube ai digest",
+    "summarize youtube",
+    "browse youtube ai",
+    "youtube ai summary"
+  ]
+}
