@@ -1,89 +1,126 @@
 ---
 name: youtube-ai-digest
-description: Browse AI-related YouTube videos from subscribed channels, summarize content, capture screenshots, and generate Markdown reports. Triggers on "youtube ai digest", "summarize youtube ai", "browse youtube ai videos".
+description: Browses AI-related YouTube videos from subscribed channels, fetches transcripts, generates summaries, and creates Markdown reports. Use when the user mentions YouTube AI videos, video summaries, channel subscriptions, or asks about recent AI content from YouTube creators.
 ---
 
 # YouTube AI Digest
 
-浏览关注博主的 AI 相关 YouTube 视频，获取字幕/内容总结，截取关键画面，生成 Markdown 文档。
+Browse subscribed YouTube channels for AI-related videos, extract transcripts, and generate structured Markdown reports.
 
 ## Prerequisites
 
 - Python 3.9+
 - yt-dlp (`pip install yt-dlp`)
-- youtube-transcript-api (`pip install youtube-transcript-api`)
-- playwright-skill (用于浏览器操作和截图)
 
-## 配置
+## Quick Start
 
-编辑 `~/.claude/skills/youtube-ai-digest/data/channels.json` 添加关注的频道：
-
-```json
-{
-  "channels": [
-    {"name": "3Blue1Brown", "id": "UCYO_jab_esuFRV4b17AJtAw"},
-    {"name": "Two Minute Papers", "id": "UCbfYPyITQ-7l4upoX8nvctg"}
-  ]
-}
-```
-
-## Scripts
-
-### 1. fetch_videos.py
-获取频道最新视频列表
+### 1. Fetch Recent Videos
 
 ```bash
-python scripts/fetch_videos.py --days 1
+python scripts/fetch_videos.py --days 7 --keyword AI
 ```
 
-### 2. get_transcript.py
-获取视频字幕
+Output: `data/videos.json` with filtered video list.
+
+### 2. Get Transcript
 
 ```bash
 python scripts/get_transcript.py --video-id VIDEO_ID
 ```
 
-### 3. generate_report.py
-生成 Markdown 报告
+Output: `data/transcript_{VIDEO_ID}.txt` and `.json`.
+
+### 3. Generate Report
 
 ```bash
-python scripts/generate_report.py --video-id VIDEO_ID --output ~/reports/
+python scripts/generate_report.py --video-id VIDEO_ID --summary "Your summary here"
 ```
+
+Output: `data/output/{VIDEO_ID}/report.md` with thumbnail.
+
+## Configuration
+
+Edit `data/channels.json` to manage subscribed channels:
+
+```json
+{
+  "channels": [
+    {"name": "Two Minute Papers", "id": "UCbfYPyITQ-7l4upoX8nvctg"},
+    {"name": "AI Explained", "id": "UCNJ1Ymd5yFuUPtn21xtRbbw"}
+  ]
+}
+```
+
+Find channel IDs from YouTube channel URLs: `youtube.com/channel/{CHANNEL_ID}`.
 
 ## Workflow
 
-1. **获取视频列表**: `python scripts/fetch_videos.py --days 1`
-2. **获取字幕**: `python scripts/get_transcript.py --video-id VIDEO_ID`
-3. **截图**: 使用 playwright-skill 截取视频画面
-4. **生成报告**: `python scripts/generate_report.py`
+Copy this checklist to track progress:
 
-## 浏览器操作
+```
+Task Progress:
+- [ ] Step 1: Fetch recent videos from channels
+- [ ] Step 2: Review video list and select target
+- [ ] Step 3: Get transcript for selected video
+- [ ] Step 4: Analyze transcript and create summary
+- [ ] Step 5: Generate Markdown report
+```
 
-截图时调用 playwright-skill：
-```
-使用 playwright 打开 https://youtube.com/watch?v=VIDEO_ID
-跳转到 1:30 并截图保存
-```
+**Step 1: Fetch recent videos**
+
+Run `python scripts/fetch_videos.py --days 7` to get videos from the past week.
+
+**Step 2: Review and select**
+
+Check `data/videos.json` for available videos. Select one for analysis.
+
+**Step 3: Get transcript**
+
+Run `python scripts/get_transcript.py --video-id {ID}` to download subtitles.
+
+**Step 4: Analyze and summarize**
+
+Read the transcript file and create a concise summary covering:
+- Main topics discussed
+- Key insights and takeaways
+- Notable timestamps
+
+**Step 5: Generate report**
+
+Run `python scripts/generate_report.py --video-id {ID} --summary "..."` to create the final Markdown report.
 
 ## Output Format
 
 ```markdown
-# [视频标题]
+# [Video Title]
 
-![封面](thumbnail.jpg)
+![Thumbnail](thumbnail.webp)
 
-## 视频信息
-- 频道: [频道名]
-- 发布时间: [日期]
-- 链接: [URL]
+## Video Info
+- Channel: [Name]
+- Published: [Date]
+- Duration: [Length]
+- Link: [URL]
 
-## 内容摘要
-[摘要内容]
+## Summary
+[AI-generated summary of content]
 
-## 关键时间点
-- 00:00 - [主题1]
-- 05:30 - [主题2]
-
-## 截图
-![截图1](screenshot_1.png)
+## Transcript
+[Timestamped transcript excerpt]
 ```
+
+## Scripts Reference
+
+| Script | Purpose | Output |
+|--------|---------|--------|
+| `fetch_videos.py` | Fetch channel videos | `data/videos.json` |
+| `get_transcript.py` | Download subtitles | `data/transcript_*.txt/json` |
+| `generate_report.py` | Create Markdown report | `data/output/*/report.md` |
+
+## Error Handling
+
+**No transcript available**: Some videos lack subtitles. Check if auto-generated captions exist.
+
+**Rate limiting**: Add delays between requests if fetching many channels.
+
+**Network issues**: Retry with `--days 1` for fewer results.

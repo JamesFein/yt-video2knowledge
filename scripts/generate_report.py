@@ -15,7 +15,8 @@ def get_video_info(video_id):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         return json.loads(result.stdout)
-    except:
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError) as e:
+        print(f"Error fetching video info: {e}")
         return {}
 
 def download_thumbnail(video_id, output_path):
