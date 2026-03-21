@@ -1,8 +1,10 @@
 {
   "name": "youtube-ai-digest",
   "version": "2.1.0",
-  "description": "Local-first YouTube playlist digest workflow for macOS. Uses uv + uv.lock for reproducible Python environments, Brewfile for system dependencies, the YouTube Data API for strict playlist-added dates, and MLX Whisper plus Responses API for transcript summarization.",
+  "description": "Repository-embedded macOS skill for the local knowledge playlist workflow. Uses uv + uv.lock for reproducible Python environments, Brewfile for system dependencies, the YouTube Data API for strict playlist-added dates, Playwright-managed Chrome for cookies and browser fallback, and MLX Whisper plus Responses API for transcript summarization.",
   "author": "User",
+  "skill_mode": "embedded_repository_skill",
+  "skill_scope": "current-repo-first with adjacent local YouTube playlist summarization use cases",
   "dependencies": {
     "python": ">=3.11 (recommended runtime line: 3.13)",
     "system_tools": ["uv", "yt-dlp", "ffmpeg"],
@@ -17,6 +19,14 @@
     "sync knowledge playlist",
     "summarize playlist videos",
     "youtube digest",
-    "playlist transcript summary"
-  ]
+    "playlist transcript summary",
+    "retry pending youtube summaries",
+    "local youtube playlist transcript recovery"
+  ],
+  "boundaries": {
+    "date_source": "Prefer YouTube Data API playlistItems dates; only use first_seen fallback when explicitly requested.",
+    "browser_role": "Playwright handles cookies, managed profile, and page fallback; it is not the default Google login path.",
+    "transcript_priority": ["official_subtitles", "auto_subtitles", "audio_download", "mlx_whisper"],
+    "summary_failure_policy": "Keep transcript outputs and mark pending_summary so summaries can be retried later."
+  }
 }

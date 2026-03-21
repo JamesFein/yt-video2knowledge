@@ -1,162 +1,146 @@
 ---
 name: youtube-ai-digest
-description: Process a local YouTube playlist into Chinese Markdown knowledge notes. Use this skill whenever the user wants to sync a specific YouTube playlist, extract transcripts, summarize newly added videos, generate a daily digest, or recover transcripts for videos that may require local MLX Whisper transcription on macOS. Target-date matching should use the YouTube Data API as the primary source of playlist-added time, while browser automation remains a dedicated Playwright-managed Chrome helper for cookies and page fallback.
+description: Process the local knowledge playlist into Chinese Markdown knowledge notes on macOS. Use this skill whenever the user wants to sync the current repository's YouTube playlist workflow, process videos added on a target date, recover transcripts, retry failed summaries, or handle local YouTube playlist summarization that may require YouTube Data API date matching, Playwright-managed Chrome cookies, yt-dlp subtitle lookup, or MLX Whisper fallback transcription. Do not use this skill for casual YouTube Q&A, generic browser automation, or unrelated video chat.
 ---
 
 # YouTube AI Digest
 
-Use this skill to process the local `knowledge` playlist into Chinese Markdown outputs on macOS.
+Use this skill for the local macOS workflow in this repository.
 
-This repository is meant for local use. Do not assume plugin marketplace packaging or remote distribution is relevant.
+This skill is for running and reporting the repository's YouTube playlist digest pipeline. It is not a plugin-marketplace skill, and it is not a general browser automation skill.
 
-## What This Skill Does
+## What This Skill Is For
 
-- Reads the configured YouTube playlist URL from `data/knowledge_config.json`
-- Interprets target dates in `Asia/Shanghai`
-- Uses the YouTube Data API to determine playlist items added on the requested day
-- Tries official subtitles first, then auto subtitles
-- Falls back to local audio transcription with `mlx-whisper` when no subtitles exist
-- Calls an OpenAI-compatible API to generate Chinese Markdown summaries
-- Keeps transcript results even when summary generation fails, and supports later summary retries
-- Writes:
-  - `data/runs/YYYY-MM-DD/daily-overview.zh-CN.md`
-  - `data/runs/YYYY-MM-DD/manifest.json`
-  - `data/runs/YYYY-MM-DD/videos/<video-id>/summary.zh-CN.md`
-  - `data/runs/YYYY-MM-DD/videos/<video-id>/transcript.original.txt`
+- Process the configured `knowledge` playlist into Chinese Markdown outputs.
+- Match playlist-added dates in `Asia/Shanghai`, using the YouTube Data API as the primary source of truth.
+- Prefer official subtitles, then auto subtitles, then local `mlx-whisper` transcription.
+- Keep transcript outputs even when summary generation fails.
+- Retry pending summaries without redoing the whole run when possible.
 
-## Local Prerequisites
+The main outputs are:
 
-- macOS on Apple Silicon
-- `uv`
-- `yt-dlp`
-- `ffmpeg`
-- `mlx-whisper`
-- `playwright`
-- `google-auth`
-- `google-auth-oauthlib`
-- `google-api-python-client`
-- Google Chrome installed locally
+- `data/runs/YYYY-MM-DD/daily-overview.zh-CN.md`
+- `data/runs/YYYY-MM-DD/manifest.json`
+- `data/runs/YYYY-MM-DD/videos/<video-id>/summary.zh-CN.md`
+- `data/runs/YYYY-MM-DD/videos/<video-id>/transcript.original.txt`
+- `data/runs/YYYY-MM-DD/videos/<video-id>/metadata.json`
 
-## Runtime Configuration
+## When To Use This Skill
 
-1. Create or update `.env.local` with:
+Use this skill when the user is asking for one of these repository-first tasks:
 
-```bash
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=...
-OPENAI_MODEL=...
-```
+- Sync the `knowledge` playlist for a specific date.
+- Generate a Chinese daily digest for newly added playlist videos.
+- Recover transcripts for playlist videos, including no-subtitle cases.
+- Retry failed or pending summaries from an earlier run.
+- Reprocess one known YouTube video inside this repository's local workflow.
 
-If the custom gateway has certificate issues in Python, optionally set:
+This skill can also trigger for closely related local tasks if the user is clearly asking for:
 
-```bash
-OPENAI_ALLOW_INSECURE_SSL=true
-```
+- Local YouTube playlist transcript extraction.
+- Subtitle recovery with `yt-dlp`.
+- No-subtitle fallback transcription with `mlx-whisper` on macOS.
+- Chinese Markdown summaries built from local YouTube transcripts.
 
-2. Update `data/knowledge_config.json` as needed.
+## When Not To Use This Skill
 
-3. Save a Google Cloud Desktop OAuth client JSON to:
+Do not use this skill for:
 
-```bash
-data/youtube-oauth-client.json
-```
+- Casual questions about a YouTube video or channel.
+- Generic browser automation not tied to this digest workflow.
+- General OpenAI or Playwright setup questions with no playlist-processing goal.
+- Cross-platform packaging or Windows instructions.
+- Plugin marketplace packaging or distribution work.
 
-4. Sync the project environment:
+## Required Local Setup
 
-```bash
-uv sync
-```
+Assume these prerequisites before running the workflow:
 
-5. Run one-time YouTube API auth:
+- macOS on Apple Silicon.
+- `uv` has been installed and `uv sync` has been run.
+- `yt-dlp`, `ffmpeg`, Google Chrome, and the Python dependencies from `uv.lock` are available.
+- `.env.local` contains:
+  - `OPENAI_API_KEY`
+  - `OPENAI_BASE_URL`
+  - `OPENAI_MODEL`
+- `data/youtube-oauth-client.json` exists.
+- One-time YouTube OAuth has already been completed:
+  - `uv run python scripts/run_knowledge_digest.py --youtube-auth`
 
-```bash
-uv run python scripts/run_knowledge_digest.py --youtube-auth
-```
-
-6. If you want the shared browser skill available to other AI tools too:
-
-```bash
-npx skills add https://github.com/microsoft/playwright-cli --skill playwright-cli -g --all -y
-```
-
-## Default Workflow
-
-Initialize the managed Chrome profile in two steps:
+If the managed Chrome profile is needed, the usual initialization path is:
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
 ```
 
-This requires the user's normal Google Chrome to be fully closed first.
+## Execution Workflow
 
-If you need to verify the managed browser profile itself:
-
-```bash
-uv run python scripts/run_knowledge_digest.py --bootstrap-login
-```
-
-Do not rely on interactive Google login inside the Playwright browser for production automation. Google may block it as an automated sign-in.
-
-Run the digest:
+Use the default run path unless the user explicitly asks for a different one:
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD
 ```
 
-If you explicitly want the older first-seen fallback:
+Important execution rules:
 
-```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --allow-fallback-first-seen
-```
+- Treat the YouTube Data API as the default source of playlist-added dates.
+- Follow transcript priority in this order:
+  - official subtitles
+  - auto subtitles
+  - audio download
+  - `mlx-whisper`
+- If summary generation fails, keep transcript outputs and use `--retry-summaries` later instead of calling the whole run a total loss.
+- Use `--video-id VIDEO_ID --target-date YYYY-MM-DD` only when the user explicitly wants a single-video reprocess.
 
-If you specifically need to debug against your current Chrome session:
-
-```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --attach-current-chrome
-```
-
-This is not the default automation path and may still require CDP permissions.
-
-If you need to reprocess a single video:
-
-```bash
-uv run python scripts/run_knowledge_digest.py --video-id VIDEO_ID --target-date YYYY-MM-DD
-```
-
-If you need to retry pending summaries from an existing run:
+Useful recovery commands:
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
+uv run python scripts/run_knowledge_digest.py --video-id VIDEO_ID --target-date YYYY-MM-DD
 ```
 
-## Compatible Legacy Commands
+## Decision Boundaries
 
-These older commands are still supported:
+Default behavior:
+
+- Use strict date matching first.
+- Keep transcripts even when summaries fail.
+- Use the managed Playwright Chrome profile for cookies and page fallback.
+
+Do not default to these paths unless the user explicitly asks for them:
+
+- `--allow-fallback-first-seen`
+- `--attach-current-chrome`
+- Interactive Google login inside a Playwright-controlled browser
+
+Browser role boundaries:
+
+- Playwright is for cookies, managed profile use, and page fallback.
+- It is not the primary source of playlist-added dates.
+- It is not the preferred production login path for Google account authentication.
+
+## How To Report Results
+
+After running the workflow, report these items:
+
+- output directory
+- processed video count
+- failed video count
+- pending summary count
+- any `needs_review` items
+- transcript source for relevant videos
+- subtitle detection results or ASR fallback reason when relevant
+- timing metrics when they help explain slow runs
+- browser diagnostics path if YouTube self-check failed
+
+If the run cannot continue, tell the user the next concrete dependency or credential they need to fix.
+
+## Related Commands
+
+Legacy commands still exist, but they are not the default skill path:
 
 ```bash
 uv run python scripts/fetch_videos.py --days 7 --keyword AI
 uv run python scripts/get_transcript.py --video-id VIDEO_ID
 uv run python scripts/generate_report.py --video-id VIDEO_ID --summary "..."
 ```
-
-## How To Use This Skill In Practice
-
-When the user asks for a digest run:
-
-1. Verify `uv sync` has already been run and the project environment matches `uv.lock`.
-2. Check the three required env vars:
-   - `OPENAI_API_KEY`
-   - `OPENAI_BASE_URL`
-   - `OPENAI_MODEL`
-3. Run `uv run python scripts/run_knowledge_digest.py`.
-4. Report:
-   - output directory
-   - processed video count
-   - pending summary count
-   - any `needs_review` items
-   - any transcript-failed videos and the error message
-   - transcript source and timing metrics when relevant
-   - subtitle detection results and ASR fallback reasons when relevant
-   - browser diagnostics path if YouTube self-check failed
-
-If the digest cannot continue because system tools are missing, tell the user exactly which dependency to install next.
