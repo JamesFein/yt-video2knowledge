@@ -1,0 +1,23 @@
+{
+  "skill_name": "youtube-ai-digest",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "处理 knowledge 播放列表里昨天新增的视频，输出中文日报和每个视频的原始 transcript。",
+      "expected_output": "生成北京时间目标日期下的 daily overview，以及每个视频的 summary.zh-CN.md 与 transcript.original.txt。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "如果 knowledge 播放列表里昨天新增的一条视频没有任何字幕，也要下载音频并用 MLX Whisper 转写，然后生成中文总结。",
+      "expected_output": "优先尝试官方字幕和自动字幕，失败后走本地音频转写，并在元数据中标出 transcript 来源。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "只重跑 2026-03-20 那天 knowledge 播放列表新增视频的日报，不影响其他日期的产物。",
+      "expected_output": "只更新 data/runs/2026-03-20 下的文档和 manifest，不触碰其他日期目录。",
+      "files": []
+    }
+  ]
+}

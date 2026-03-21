@@ -1,104 +1,48 @@
 #!/usr/bin/env python3
-"""获取视频字幕 - 使用 yt-dlp"""
-import json
+"""Download a video's transcript and save it to local files."""
+from __future__ import annotations
+
 import argparse
-import subprocess
+import json
+import sys
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+from knowledge_digest import DATA_DIR, DigestError, download_transcript
 
-def get_transcript_ytdlp(video_id):
-    """使用 yt-dlp 获取字幕"""
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    output_template = str(DATA_DIR / f"sub_{video_id}")
 
-    # 尝试获取字幕
-    cmd = [
-        "yt-dlp", "--skip-download",
-        "--write-auto-sub", "--write-sub",
-        "--sub-lang", "en,zh",
-        "--sub-format", "vtt",
-        "-o", output_template,
-        url
-    ]
-    subprocess.run(cmd, capture_output=True)
-
-    # 查找生成的字幕文件
-    for suffix in [".en.vtt", ".zh.vtt", ".en-orig.vtt"]:
-        sub_file = DATA_DIR / f"sub_{video_id}{suffix}"
-        if sub_file.exists():
-            return parse_vtt(sub_file), suffix.split('.')[1]
-    return None, None
-
-def parse_vtt(vtt_file):
-    """解析 VTT 字幕文件"""
-    content = vtt_file.read_text(encoding="utf-8")
-    lines = content.split('\n')
-    transcript = []
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        # 查找时间戳行 (00:00:00.000 --> 00:00:00.000)
-        if '-->' in line:
-            parts = line.split('-->')
-            start_time = parts[0].strip()
-            # 解析时间
-            time_parts = start_time.replace(',', '.').split(':')
-            if len(time_parts) == 3:
-                h, m, s = time_parts
-                start_seconds = int(h) * 3600 + int(m) * 60 + float(s.split('.')[0])
-            else:
-                start_seconds = 0
-            # 获取字幕文本
-            i += 1
-            text_lines = []
-            while i < len(lines) and lines[i].strip() and '-->' not in lines[i]:
-                text = lines[i].strip()
-                # 移除 VTT 标签
-                if not text.isdigit() and '<' not in text:
-                    text_lines.append(text)
-                i += 1
-            if text_lines:
-                transcript.append({"start": start_seconds, "text": ' '.join(text_lines)})
-        else:
-            i += 1
-    return transcript
-
-def format_transcript(transcript):
-    """格式化字幕为文本"""
-    lines = []
-    for entry in transcript:
-        start = int(entry["start"])
-        mins, secs = divmod(start, 60)
-        text = entry["text"]
-        lines.append(f"[{mins:02d}:{secs:02d}] {text}")
-    return "\n".join(lines)
-
-def main():
-    parser = argparse.ArgumentParser()
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Download a YouTube video's transcript.")
     parser.add_argument("--video-id", required=True)
-    parser.add_argument("--output", help="输出文件路径")
+    parser.add_argument("--output", help="Optional transcript output path.")
+    parser.add_argument("--browser", default="chrome", help="Browser name for yt-dlp cookies.")
     args = parser.parse_args()
 
-    print(f"获取字幕: {args.video_id}")
-    transcript, lang = get_transcript_ytdlp(args.video_id)
+    output_dir = DATA_DIR / "transcripts" / args.video_id
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not transcript:
-        print("无法获取字幕")
-        return
+    try:
+        result, _diagnostics = download_transcript(args.video_id, output_dir, browser=args.browser)
+    except DigestError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
-    formatted = format_transcript(transcript)
-    print(f"字幕语言: {lang}")
-    print(f"字幕条数: {len(transcript)}")
+    if result is None:
+        print("无法获取官方或自动字幕。", file=sys.stderr)
+        return 1
 
-    output_file = DATA_DIR / f"transcript_{args.video_id}.txt"
-    output_file.write_text(formatted, encoding="utf-8")
-    print(f"已保存到: {output_file}")
+    transcript_path = Path(args.output) if args.output else DATA_DIR / f"transcript_{args.video_id}.txt"
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text(result.text, encoding="utf-8")
 
-    # JSON 格式
-    json_file = DATA_DIR / f"transcript_{args.video_id}.json"
-    with open(json_file, "w", encoding="utf-8") as f:
-        json.dump(transcript, f, ensure_ascii=False, indent=2)
+    json_path = transcript_path.with_suffix(".json")
+    json_path.write_text(json.dumps(result.segments, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"字幕来源: {result.source}")
+    print(f"字幕语言: {result.language}")
+    print(f"已保存到: {transcript_path}")
+    print(f"分段 JSON: {json_path}")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,0 +1,16 @@
+[project]
+name = "youtube-knowledge-digest"
+version = "0.1.0"
+description = "Local-first YouTube playlist digest workflow for macOS."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mlx-whisper",
+  "playwright",
+  "google-auth",
+  "google-auth-oauthlib",
+  "google-api-python-client",
+]
+
+[tool.uv]
+package = false

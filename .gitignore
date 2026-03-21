@@ -1,9 +1,14 @@
 # youtube-ai-digest data
 data/
 !data/channels.json
+!data/knowledge_config.json
+!data/state/
+!data/state/knowledge_digest_state.json
 __pycache__/
 *.pyc
 .DS_Store
 *.png
 *.jpg
 *.webp
+.venv/
+.env.local

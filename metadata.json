@@ -1,18 +1,22 @@
 {
   "name": "youtube-ai-digest",
-  "version": "1.0.0",
-  "description": "Browse, summarize and capture AI-related YouTube videos from subscribed channels. Generates Markdown reports with thumbnails and screenshots.",
+  "version": "2.1.0",
+  "description": "Local-first YouTube playlist digest workflow for macOS. Uses uv + uv.lock for reproducible Python environments, Brewfile for system dependencies, the YouTube Data API for strict playlist-added dates, and MLX Whisper plus Responses API for transcript summarization.",
   "author": "User",
   "dependencies": {
-    "python": ">=3.9",
-    "pip_packages": ["yt-dlp", "youtube-transcript-api"]
+    "python": ">=3.11 (recommended runtime line: 3.13)",
+    "system_tools": ["uv", "yt-dlp", "ffmpeg"],
+    "python_packages": ["mlx-whisper", "playwright", "google-auth", "google-auth-oauthlib", "google-api-python-client"],
+    "browser_runtime": ["Google Chrome", "Cloned Playwright-managed Chrome profile (default)", "Chrome CDP at 127.0.0.1:9222 for debug-only attach"],
+    "skills": ["playwright-cli (global shared skill)"],
+    "environment_manager": ["pyproject.toml", "uv.lock", "Brewfile"]
   },
-  "platforms": ["macOS", "Linux"],
-  "tags": ["youtube", "ai", "summary", "video", "automation"],
+  "platforms": ["macOS"],
+  "tags": ["youtube", "playlist", "transcript", "summary", "macos", "mlx-whisper"],
   "triggers": [
-    "youtube ai digest",
-    "summarize youtube",
-    "browse youtube ai",
-    "youtube ai summary"
+    "sync knowledge playlist",
+    "summarize playlist videos",
+    "youtube digest",
+    "playlist transcript summary"
   ]
 }
