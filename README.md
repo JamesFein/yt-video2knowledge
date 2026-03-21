@@ -14,6 +14,13 @@
 - 如果你想理解整个项目怎么工作，看 `README.md`
 - 如果你想让 agent 在当前仓库里稳定复用这条流程，看 `SKILL.md`
 
+另外，这个仓库现在还提供了一套 **OpenClaw 专用安装副本**：
+
+- 仓库内协作用根目录 `SKILL.md`
+- 给本机 OpenClaw 全局注册时，用 `openclaw-skill/youtube-ai-digest/`
+
+这样做的原因是：OpenClaw 的技能目录有自己的路径边界规则，不能稳定地直接把当前仓库外链进去。
+
 ## 这个项目现在到底能做什么
 
 当前已经验证通过的主流程是：
@@ -544,6 +551,113 @@ uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --allow-f
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
+
+## 给 OpenClaw 安装并调用这个 Skill
+
+这个项目现在支持把一份 **OpenClaw 专用 skill 副本** 安装到你本机的：
+
+- `~/.openclaw/skills/youtube-ai-digest`
+
+### 为什么要单独装一份 OpenClaw skill
+
+因为你真正使用的软件是 `openclaw`，而且它的技能加载有两个现实约束：
+
+- 它认自己的 managed skills 目录：`~/.openclaw/skills`
+- 如果 skill 路径解析到配置根目录之外，日志里会出现：
+  - `Skipping skill path that resolves outside its configured root`
+
+所以最稳的方式不是把当前仓库软链接进去，而是安装一份真实的 OpenClaw skill 副本。
+
+### 安装 OpenClaw skill
+
+在仓库根目录执行：
+
+```bash
+bash scripts/install_openclaw_skill.sh
+```
+
+这个脚本会把仓库里的模板目录：
+
+- `openclaw-skill/youtube-ai-digest/`
+
+复制到：
+
+- `~/.openclaw/skills/youtube-ai-digest/`
+
+### 安装后如何验证
+
+执行下面三条命令：
+
+```bash
+openclaw skills list --json
+openclaw skills check --json
+openclaw skills info youtube-ai-digest
+```
+
+你应该能看到：
+
+- `youtube-ai-digest` 出现在 skills 列表里
+- 不再因为安装方式触发路径越界报错
+- `info` 里能看到它的描述和来源
+
+### OpenClaw 里怎么调用
+
+这个 skill 现在支持三种你会实际使用的入口：
+
+#### 1. GUI
+
+在 OpenClaw GUI 里直接说这类话：
+
+- `处理 knowledge 播放列表昨天新增的视频，给我中文日报`
+- `knowledge 列表里昨天那批视频帮我补一下总结`
+- `把 2026-03-21 新加的视频都整理成知识笔记`
+
+#### 2. Telegram
+
+Telegram 里可以更短一点，但最好保留这些关键词中的几个：
+
+- `knowledge`
+- `昨天新增`
+- `中文日报`
+- `补跑总结`
+- `无字幕转写`
+
+例如：
+
+- `knowledge 昨天新增的视频帮我跑一下，出中文日报`
+- `knowledge 那条没字幕的视频也继续转写`
+
+#### 3. CLI
+
+CLI 可以显式点名 skill 意图，最直接的模板是：
+
+```bash
+openclaw agent --local --message "请用 youtube-ai-digest 处理 knowledge 播放列表 2026-03-21 新增的视频，并生成中文日报。"
+```
+
+如果你要补跑总结，可以这样说：
+
+```bash
+openclaw agent --local --message "请用 youtube-ai-digest 补跑 knowledge 播放列表 2026-03-21 那批视频里待补的中文总结，不要重新下载全部视频。"
+```
+
+### OpenClaw skill 实际调用的是什么
+
+OpenClaw 版 skill 自己不重写业务逻辑，它只是一个很薄的包装层。
+
+它最终固定调用的还是当前仓库：
+
+- `/Users/administrator/projects/yt-video2knowledge`
+
+实际运行入口仍然是：
+
+- `uv run python scripts/run_knowledge_digest.py ...`
+
+这样做的好处是：
+
+- OpenClaw 全局能发现这个 skill
+- 业务逻辑仍只有当前仓库这一份，不会出现双份实现漂移
+- GUI / Telegram / CLI 三个入口最终都走同一套脚本和配置
 ```
 
 ## 常见报错速查

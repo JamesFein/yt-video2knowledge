@@ -5,6 +5,12 @@
   "author": "User",
   "skill_mode": "embedded_repository_skill",
   "skill_scope": "current-repo-first with adjacent local YouTube playlist summarization use cases",
+  "openclaw_integration": {
+    "managed_skill_dir": "~/.openclaw/skills",
+    "installed_skill_name": "youtube-ai-digest",
+    "binding_mode": "fixed_repository_path",
+    "fixed_repository_path": "/Users/administrator/projects/yt-video2knowledge"
+  },
   "dependencies": {
     "python": ">=3.11 (recommended runtime line: 3.13)",
     "system_tools": ["uv", "yt-dlp", "ffmpeg"],

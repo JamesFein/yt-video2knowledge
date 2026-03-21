@@ -36,6 +36,30 @@
       "prompt": "只重跑视频 U3u_Gl4EK-M，目标日期还是 2026-03-21。我要它继续走当前仓库这套知识整理流程，而不是重新发明一套脚本。",
       "expected_output": "使用单视频重处理路径，仍复用当前仓库的 YouTube API、字幕、MLX Whisper、总结与落盘规则，并把输出写回该日期目录。",
       "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "用 youtube-ai-digest 处理一下 knowledge 播放列表昨天新增的视频，给我中文日报。这个请求是我从 OpenClaw GUI 里直接发出来的。",
+      "expected_output": "Skill 应被自然触发，并沿用固定仓库路径执行整批目标日期处理，而不是尝试临时拼出另一套独立流程。",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "knowledge 昨天那批视频帮我补一下总结，transcript 如果已经有就别重下了。这种短消息是我从 Telegram 发给 OpenClaw 的。",
+      "expected_output": "Skill 应识别为 retry summaries 场景，优先补跑 pending_summary，而不是重新下载整批视频。",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "请用 OpenClaw 的 youtube-ai-digest 技能，在当前这台 Mac 上处理 2026-03-21 的 knowledge 播放列表新增视频。",
+      "expected_output": "Skill 应支持 CLI 或显式点名触发，并固定调用 /Users/administrator/projects/yt-video2knowledge 里的脚本与配置。",
+      "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "帮我聊聊这个 YouTube 视频到底讲得好不好，不用下载、不要 transcript，也不用日报。",
+      "expected_output": "这个近邻场景不该触发 youtube-ai-digest，因为它只是普通 YouTube 内容讨论，不是当前仓库的本地摘要流程。",
+      "files": []
     }
   ]
 }
