@@ -6,12 +6,15 @@ import unittest
 import json
 from datetime import date, datetime
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import run_knowledge_digest as cli_module
+import knowledge_digest as knowledge_digest_module
 from generate_report import generate_markdown
 from knowledge_digest import (
     BEIJING_TZ,
@@ -20,10 +23,12 @@ from knowledge_digest import (
     extract_playlist_id,
     filter_entries_for_date,
     load_config,
+    merge_run_results,
     normalize_playlist_url,
     parse_added_date_text,
     parse_target_date,
     parse_vtt,
+    plan_run_entries,
     select_entries_for_processing,
 )
 
@@ -119,7 +124,9 @@ class PlaylistPayloadTests(unittest.TestCase):
                 "raw_text_fragments": ["昨天添加到播放列表", "其他信息"],
             }
         ]
-        normalized = _normalize_playlist_payload(payload)
+        reference = datetime(2026, 3, 21, 10, 0, tzinfo=BEIJING_TZ)
+        with mock.patch.object(knowledge_digest_module, "beijing_now", return_value=reference):
+            normalized = _normalize_playlist_payload(payload)
         self.assertEqual(len(normalized), 1)
         self.assertEqual(normalized[0]["id"], "abc123xyz89")
         self.assertEqual(normalized[0]["channel_name"], "Demo Channel")
@@ -148,6 +155,88 @@ class ProcessingSelectionTests(unittest.TestCase):
         self.assertEqual(len(matched), 1)
         self.assertEqual(len(needs_review), 0)
         self.assertEqual(matched[0]["playlist_added_date"], target_date)
+
+    def test_plan_run_entries_skips_existing_summary_ready(self) -> None:
+        run_mode, to_process, stats = plan_run_entries(
+            [
+                {"id": "ready", "title": "Ready"},
+                {"id": "pending", "title": "Pending"},
+                {"id": "failed", "title": "Failed"},
+                {"id": "new", "title": "New"},
+            ],
+            {
+                "processed_videos": [
+                    {"id": "ready", "processing_status": "summary_ready"},
+                    {"id": "pending", "processing_status": "pending_summary"},
+                ],
+                "failed_videos": [
+                    {"id": "failed", "error": "boom"},
+                ],
+            },
+        )
+        self.assertEqual(run_mode, "incremental")
+        self.assertEqual([item["id"] for item in to_process], ["pending", "failed", "new"])
+        self.assertEqual(
+            stats,
+            {
+                "selected_count": 4,
+                "to_process_count": 3,
+                "new_video_count": 1,
+                "retried_non_success_count": 2,
+                "skipped_summary_ready_count": 1,
+            },
+        )
+
+    def test_plan_run_entries_can_force_full_reprocess(self) -> None:
+        run_mode, to_process, stats = plan_run_entries(
+            [{"id": "ready", "title": "Ready"}],
+            {"processed_videos": [{"id": "ready", "processing_status": "summary_ready"}]},
+            full_reprocess=True,
+        )
+        self.assertEqual(run_mode, "full")
+        self.assertEqual([item["id"] for item in to_process], ["ready"])
+        self.assertEqual(stats["selected_count"], 1)
+        self.assertEqual(stats["to_process_count"], 1)
+        self.assertEqual(stats["skipped_summary_ready_count"], 0)
+
+
+class MergeRunResultsTests(unittest.TestCase):
+    def test_merge_run_results_preserves_old_success_and_replaces_updated_entries(self) -> None:
+        merged_processed, merged_failed = merge_run_results(
+            {
+                "processed_videos": [
+                    {"id": "kept", "processing_status": "summary_ready", "title": "Kept"},
+                    {"id": "retry-success", "processing_status": "pending_summary", "title": "Retry success old"},
+                    {"id": "stale-pending", "processing_status": "pending_summary", "title": "Stale pending"},
+                ],
+                "failed_videos": [
+                    {"id": "retry-fail", "title": "Retry fail old", "error": "old"},
+                    {"id": "becomes-success", "title": "Becomes success old", "error": "old"},
+                ],
+            },
+            [
+                {"id": "retry-success", "processing_status": "summary_ready", "title": "Retry success new"},
+                {"id": "becomes-success", "processing_status": "summary_ready", "title": "Becomes success new"},
+                {"id": "new", "processing_status": "pending_summary", "title": "New pending"},
+            ],
+            [
+                {"id": "retry-fail", "title": "Retry fail new", "error": "new"},
+                {"id": "new-fail", "title": "New fail", "error": "new"},
+            ],
+        )
+        self.assertEqual(
+            [item["id"] for item in merged_processed],
+            ["kept", "retry-success", "stale-pending", "becomes-success", "new"],
+        )
+        self.assertEqual(
+            [item["processing_status"] for item in merged_processed if item["id"] == "retry-success"],
+            ["summary_ready"],
+        )
+        self.assertEqual(
+            [item["id"] for item in merged_failed],
+            ["retry-fail", "new-fail"],
+        )
+        self.assertNotIn("becomes-success", [item["id"] for item in merged_failed])
 
 
 class GenerateMarkdownTests(unittest.TestCase):
@@ -181,6 +270,23 @@ class JsonWriteTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(payload["target_date"], "2026-03-20")
         self.assertTrue(payload["generated_at"].startswith("2026-03-21T09:00:00"))
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_passes_full_reprocess_flag(self) -> None:
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
+            with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21", "--full-reprocess"]):
+                exit_code = cli_module.main()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(mocked_run.call_args.kwargs["full_reprocess"])
+
+    def test_cli_video_id_still_bypasses_incremental_skip_decision(self) -> None:
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
+            with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21", "--video-id", "abc123xyz89"]):
+                exit_code = cli_module.main()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(mocked_run.call_args.kwargs["video_id"], "abc123xyz89")
+        self.assertFalse(mocked_run.call_args.kwargs["full_reprocess"])
 
 
 def json_text(payload: dict) -> str:

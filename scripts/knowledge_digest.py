@@ -1357,6 +1357,105 @@ def select_entries_for_processing(
     return matched, needs_review
 
 
+def load_run_manifest(run_dir: Path) -> dict[str, Any]:
+    return _read_json(run_dir / "manifest.json", {})
+
+
+def _index_videos_by_id(videos: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for video in videos:
+        video_id = video.get("id")
+        if video_id:
+            indexed[video_id] = video
+    return indexed
+
+
+def _default_incremental_stats(
+    *,
+    selected_count: int = 0,
+    to_process_count: int = 0,
+    new_video_count: int = 0,
+    retried_non_success_count: int = 0,
+    skipped_summary_ready_count: int = 0,
+) -> dict[str, int]:
+    return {
+        "selected_count": selected_count,
+        "to_process_count": to_process_count,
+        "new_video_count": new_video_count,
+        "retried_non_success_count": retried_non_success_count,
+        "skipped_summary_ready_count": skipped_summary_ready_count,
+    }
+
+
+def plan_run_entries(
+    entries: list[dict[str, Any]],
+    existing_manifest: dict[str, Any],
+    *,
+    full_reprocess: bool = False,
+) -> tuple[str, list[dict[str, Any]], dict[str, int]]:
+    selected_count = len(entries)
+    if full_reprocess or not existing_manifest:
+        return (
+            "full",
+            entries,
+            _default_incremental_stats(
+                selected_count=selected_count,
+                to_process_count=len(entries),
+            ),
+        )
+
+    processed_index = _index_videos_by_id(existing_manifest.get("processed_videos", []))
+    failed_index = _index_videos_by_id(existing_manifest.get("failed_videos", []))
+    entries_to_process: list[dict[str, Any]] = []
+    new_video_count = 0
+    retried_non_success_count = 0
+    skipped_summary_ready_count = 0
+
+    for entry in entries:
+        existing_processed = processed_index.get(entry["id"])
+        if existing_processed and existing_processed.get("processing_status") == "summary_ready":
+            skipped_summary_ready_count += 1
+            continue
+        if existing_processed or entry["id"] in failed_index:
+            retried_non_success_count += 1
+        else:
+            new_video_count += 1
+        entries_to_process.append(entry)
+
+    return (
+        "incremental",
+        entries_to_process,
+        _default_incremental_stats(
+            selected_count=selected_count,
+            to_process_count=len(entries_to_process),
+            new_video_count=new_video_count,
+            retried_non_success_count=retried_non_success_count,
+            skipped_summary_ready_count=skipped_summary_ready_count,
+        ),
+    )
+
+
+def merge_run_results(
+    existing_manifest: dict[str, Any],
+    processed_videos: list[dict[str, Any]],
+    failed_videos: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    merged_processed = _index_videos_by_id(existing_manifest.get("processed_videos", []))
+    merged_failed = _index_videos_by_id(existing_manifest.get("failed_videos", []))
+
+    for video in processed_videos:
+        video_id = video["id"]
+        merged_failed.pop(video_id, None)
+        merged_processed[video_id] = video
+
+    for video in failed_videos:
+        video_id = video["id"]
+        merged_processed.pop(video_id, None)
+        merged_failed[video_id] = video
+
+    return list(merged_processed.values()), list(merged_failed.values())
+
+
 def resolve_openai_settings(config: DigestConfig) -> dict[str, str]:
     load_env_file()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -1602,6 +1701,7 @@ def build_daily_overview_markdown(
     failed_videos: list[dict[str, Any]],
     needs_review: list[dict[str, Any]],
     overview_summary: str,
+    reused_summary_ready_count: int = 0,
 ) -> str:
     summary_ready_videos = [item for item in processed_videos if item.get("processing_status") == "summary_ready"]
     pending_summary_videos = [item for item in processed_videos if item.get("processing_status") == "pending_summary"]
@@ -1614,6 +1714,7 @@ def build_daily_overview_markdown(
         f"- 待补总结视频数: {len(pending_summary_videos)}",
         f"- Transcript 失败视频数: {len(failed_videos)}",
         f"- 待人工复核视频数: {len(needs_review)}",
+        f"- 已复用既有成功视频数: {reused_summary_ready_count}",
         "",
         "## 今日概览",
         overview_summary.strip() or "无摘要",
@@ -1758,14 +1859,24 @@ def _build_manifest(
     processed_videos: list[dict[str, Any]],
     failed_videos: list[dict[str, Any]],
     needs_review: list[dict[str, Any]],
+    *,
+    run_mode: str = "full",
+    incremental_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pending_summary_videos = _pending_summary_videos(processed_videos)
+    normalized_incremental_stats = _default_incremental_stats()
+    if incremental_stats:
+        for key in normalized_incremental_stats:
+            value = incremental_stats.get(key, normalized_incremental_stats[key])
+            normalized_incremental_stats[key] = int(value)
     return {
         "target_date": target_date.isoformat(),
         "playlist_name": config.playlist_name,
         "playlist_url": config.playlist_url,
         "generated_at": beijing_now().isoformat(),
         "browser_mode": browser_mode,
+        "run_mode": run_mode,
+        "incremental_stats": normalized_incremental_stats,
         "processed_count": len(processed_videos),
         "summary_ready_count": len(_summary_ready_videos(processed_videos)),
         "pending_summary_count": len(pending_summary_videos),
@@ -1787,6 +1898,8 @@ def _build_daily_overview_text(
     failed_videos: list[dict[str, Any]],
     needs_review: list[dict[str, Any]],
     settings: dict[str, str],
+    *,
+    reused_summary_ready_count: int = 0,
 ) -> str:
     summary_ready_videos = _summary_ready_videos(processed_videos)
     if summary_ready_videos:
@@ -1808,6 +1921,7 @@ def _build_daily_overview_text(
         failed_videos,
         needs_review,
         overview_summary,
+        reused_summary_ready_count=reused_summary_ready_count,
     )
 
 
@@ -1890,9 +2004,27 @@ def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: s
                 )
             )
 
-    manifest = _build_manifest(target_date, config, manifest.get("browser_mode", "managed"), updated_processed, failed_videos, needs_review)
+    manifest = _build_manifest(
+        target_date,
+        config,
+        manifest.get("browser_mode", "managed"),
+        updated_processed,
+        failed_videos,
+        needs_review,
+        run_mode=manifest.get("run_mode", "full"),
+        incremental_stats=manifest.get("incremental_stats"),
+    )
     _write_json(manifest_path, manifest)
-    daily_overview = _build_daily_overview_text(target_date, config, updated_processed, failed_videos, needs_review, settings)
+    reused_summary_ready_count = int(manifest["incremental_stats"].get("skipped_summary_ready_count", 0))
+    daily_overview = _build_daily_overview_text(
+        target_date,
+        config,
+        updated_processed,
+        failed_videos,
+        needs_review,
+        settings,
+        reused_summary_ready_count=reused_summary_ready_count,
+    )
     (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
     save_state(update_state(load_state(), target_date, updated_processed))
     manifest["retried_summary_count"] = retried_count
@@ -1909,6 +2041,7 @@ def run_knowledge_digest(
     attach_current_chrome: bool = False,
     retry_summaries: bool = False,
     allow_fallback_first_seen: bool = False,
+    full_reprocess: bool = False,
     video_id: str | None = None,
 ) -> dict[str, Any]:
     config = load_config(playlist_url=playlist_url)
@@ -1927,23 +2060,32 @@ def run_knowledge_digest(
     (run_dir / "videos").mkdir(parents=True, exist_ok=True)
     settings = resolve_openai_settings(config)
     state = load_state()
+    existing_manifest = load_run_manifest(run_dir)
 
     browser_mode = "managed"
     yt_dlp_cookies_path: Path | None = None
+    run_mode = "full"
+    incremental_stats = _default_incremental_stats()
 
     try:
         if video_id:
             entries = [{"id": video_id, "url": f"https://www.youtube.com/watch?v={video_id}", "title": video_id}]
             needs_review: list[dict[str, Any]] = []
+            incremental_stats = _default_incremental_stats(selected_count=1, to_process_count=1)
         else:
             fetch_result = fetch_playlist_entries(config, attach_current_chrome=attach_current_chrome, interactive_login=False)
             browser_mode = fetch_result.browser_mode
             yt_dlp_cookies_path = fetch_result.cookie_file
-            entries, needs_review = select_entries_for_processing(
+            selected_entries, needs_review = select_entries_for_processing(
                 fetch_result.entries,
                 target_date,
                 state,
                 allow_fallback_first_seen=allow_fallback_first_seen,
+            )
+            run_mode, entries, incremental_stats = plan_run_entries(
+                selected_entries,
+                existing_manifest,
+                full_reprocess=full_reprocess,
             )
 
         processed_videos: list[dict[str, Any]] = []
@@ -2054,10 +2196,33 @@ def run_knowledge_digest(
             finally:
                 cleanup_media(temp_paths)
 
-        daily_overview = _build_daily_overview_text(target_date, config, processed_videos, failed_videos, needs_review, settings)
+        merged_processed_videos, merged_failed_videos = merge_run_results(
+            existing_manifest,
+            processed_videos,
+            failed_videos,
+        )
+        reused_summary_ready_count = incremental_stats.get("skipped_summary_ready_count", 0)
+        daily_overview = _build_daily_overview_text(
+            target_date,
+            config,
+            merged_processed_videos,
+            merged_failed_videos,
+            needs_review,
+            settings,
+            reused_summary_ready_count=reused_summary_ready_count,
+        )
         (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
 
-        manifest = _build_manifest(target_date, config, browser_mode, processed_videos, failed_videos, needs_review)
+        manifest = _build_manifest(
+            target_date,
+            config,
+            browser_mode,
+            merged_processed_videos,
+            merged_failed_videos,
+            needs_review,
+            run_mode=run_mode,
+            incremental_stats=incremental_stats,
+        )
         _write_json(run_dir / "manifest.json", manifest)
 
         save_state(update_state(state, target_date, processed_videos))

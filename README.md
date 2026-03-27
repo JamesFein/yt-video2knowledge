@@ -111,6 +111,7 @@
 - 负责记录运行状态
 - 记录 transcript 来源、字幕探测结果、ASR 回退原因、各阶段耗时
 - 也是后续 `--retry-summaries` 补跑的依据
+- `manifest.json` 还会记录 `run_mode` 和 `incremental_stats`
 
 ## 我们已经验证过的错误方向
 
@@ -509,6 +510,17 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
 uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21
 ```
 
+如果当天已经跑过一次，再次执行同一个 `target-date` 时会默认走增量模式：
+
+- 已经 `summary_ready` 的视频直接复用并跳过
+- 新视频和之前非成功状态的视频会继续处理
+
+如果你明确想整天全部重跑：
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --full-reprocess
+```
+
 ### 第 9 步：如果总结失败，用补跑模式恢复
 
 ```bash
@@ -541,16 +553,25 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD
 ```
 
-### 4. 显式允许旧的 `first_seen` 回退逻辑
+默认同日重复执行会增量处理，只补新视频和非成功视频。
+
+### 4. 强制整天全量重跑
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --full-reprocess
+```
+
+### 5. 显式允许旧的 `first_seen` 回退逻辑
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --allow-fallback-first-seen
 ```
 
-### 5. 补跑待总结视频
+### 6. 补跑待总结视频
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
+```
 
 ## 给 OpenClaw 安装并调用这个 Skill
 
@@ -762,6 +783,8 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
 
 - 当天批处理的总清单
 - 可看到：
+  - `run_mode`
+  - `incremental_stats`
   - `summary_ready_count`
   - `pending_summary_count`
   - `failed_count`

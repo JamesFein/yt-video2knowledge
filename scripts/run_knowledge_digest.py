@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--force-login", action="store_true", help="Deprecated alias for --bootstrap-login.")
     parser.add_argument("--retry-summaries", action="store_true", help="Retry pending summaries from an existing run directory.")
     parser.add_argument("--allow-fallback-first-seen", action="store_true", help="Allow first-seen fallback when the YouTube API cannot verify playlist added dates.")
+    parser.add_argument("--full-reprocess", action="store_true", help="Force a full rerun for the target date instead of default same-day incremental processing.")
     parser.add_argument("--video-id", help="Process a single video directly.")
     args = parser.parse_args()
 
@@ -39,6 +40,7 @@ def main() -> int:
             attach_current_chrome=args.attach_current_chrome,
             retry_summaries=args.retry_summaries,
             allow_fallback_first_seen=args.allow_fallback_first_seen,
+            full_reprocess=args.full_reprocess,
             video_id=args.video_id,
         )
     except (ConfigurationError, DigestError) as exc:
