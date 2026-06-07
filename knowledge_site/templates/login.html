@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}登录 - Knowledge Site{% endblock %}
+
+{% block content %}
+  <section class="login-panel">
+    <h1>登录</h1>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <form action="/login" method="post" class="login-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <input type="hidden" name="username" value="knowledge-site" autocomplete="username">
+      <label for="password">共享密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus>
+      <button class="button" type="submit">进入</button>
+    </form>
+  </section>
+{% endblock %}

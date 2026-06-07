@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}{{ day.day_date }} - Knowledge Site{% endblock %}
+
+{% block content %}
+  <nav class="breadcrumbs"><a href="/">日期</a> / {{ day.day_date }}</nav>
+  <section class="page-heading">
+    <h1>{{ day.day_date }}</h1>
+    <p>当天同步完成的视频与概要。</p>
+  </section>
+
+  {% if day_summary_text %}
+    <details class="daily-overview">
+      <summary>knowledge Daily Overview</summary>
+      <section class="summary-text">{{ day_summary_text }}</section>
+    </details>
+  {% endif %}
+
+  <section class="video-list" aria-label="当天视频">
+    {% if videos %}
+      {% for video in videos %}
+        <article class="video-row">
+          <div class="row-main">
+            <a class="row-title" href="/videos/{{ video.video_id }}">{{ video.title }}</a>
+            <p>{{ video.channel_name or "未知频道" }}</p>
+          </div>
+          <div class="video-meta">
+            {% if video.duration_label %}<span>{{ video.duration_label }}</span>{% endif %}
+            {% if video.upload_date %}<span>{{ video.upload_date }}</span>{% endif %}
+          </div>
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="empty">暂无已完成总结的视频。</p>
+    {% endif %}
+  </section>
+{% endblock %}

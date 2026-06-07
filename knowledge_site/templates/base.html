@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Knowledge Site{% endblock %}</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/site.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">
+        <span>Knowledge</span>
+        <span>Site</span>
+      </a>
+      {% if request.session.get("authenticated") %}
+        <form action="/logout" method="post" class="logout-form">
+          <button class="button button-ghost" type="submit">退出</button>
+        </form>
+      {% endif %}
+    </header>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

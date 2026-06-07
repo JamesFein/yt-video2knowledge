@@ -5,11 +5,16 @@ description = "Local-first YouTube playlist digest workflow for macOS."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "fastapi",
   "mlx-whisper",
   "playwright",
+  "httpx",
   "google-auth",
   "google-auth-oauthlib",
   "google-api-python-client",
+  "itsdangerous",
+  "jinja2",
+  "uvicorn",
 ]
 
 [tool.uv]

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}{{ video.title }} - Knowledge Site{% endblock %}
+
+{% block content %}
+  <nav class="breadcrumbs"><a href="/">日期</a> / <span>{{ video.title }}</span></nav>
+
+  <section class="video-heading">
+    {% if video.thumbnail_url %}
+      <img src="{{ video.thumbnail_url }}" alt="" class="thumbnail">
+    {% endif %}
+    <div class="video-title-block">
+      <h1>{{ video.title }}</h1>
+      <p class="video-source">{{ video.channel_name or "未知频道" }}</p>
+      <a class="source-link" href="{{ video.url }}" rel="noreferrer" target="_blank">打开视频</a>
+    </div>
+  </section>
+
+  <section class="workspace" data-video-id="{{ video.video_id }}">
+    <div class="summary-column">
+      <div class="section-title">
+        <h2>Summary</h2>
+        <button class="button button-secondary" type="button" data-action="append-selected">写入 Meta Summary</button>
+      </div>
+      {% if blocks %}
+        <div class="block-list">
+          {% for block in blocks %}
+            <article class="summary-block">
+              <label>
+                <input type="checkbox" data-block-check>
+                <span class="block-heading">{{ block.heading_path }}</span>
+              </label>
+              <pre>{{ block.plain_text }}</pre>
+              <textarea class="block-text" hidden>{{ block.plain_text }}</textarea>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">暂无 summary 内容。</p>
+      {% endif %}
+    </div>
+
+    <div class="meta-column">
+      <div class="section-title">
+        <h2>Meta Summary</h2>
+        <span class="save-state" data-save-state></span>
+      </div>
+      <textarea class="meta-editor" data-meta-editor>{{ video.meta_content }}</textarea>
+      <div class="actions">
+        <button class="button" type="button" data-action="save-meta">保存</button>
+        <button class="button button-ghost" type="button" data-action="clear-meta">清空</button>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/site.js"></script>
+{% endblock %}
