@@ -997,12 +997,22 @@ def fetch_playlist_entries_via_youtube_api(config: DigestConfig) -> list[dict[st
         entries: list[dict[str, Any]] = []
         page_token: str | None = None
         while True:
-            response = service.playlistItems().list(
-                part="snippet,contentDetails,status",
-                playlistId=playlist_id,
-                maxResults=50,
-                pageToken=page_token,
-            ).execute()
+            try:
+                response = service.playlistItems().list(
+                    part="snippet,contentDetails,status",
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=page_token,
+                ).execute()
+            except Exception as exc:
+                error_text = str(exc)
+                if entries and "playlistNotFound" in error_text:
+                    print(
+                        "Warning: YouTube API pagination broke with playlistNotFound after partial success; "
+                        "continuing with collected entries and browser merge.",
+                    )
+                    break
+                raise
             for item in response.get("items", []):
                 snippet = item.get("snippet", {})
                 resource = snippet.get("resourceId", {})

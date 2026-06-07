@@ -1,146 +1,240 @@
 ---
 name: youtube-ai-digest
-description: Process the local knowledge playlist into Chinese Markdown knowledge notes on macOS. Use this skill whenever the user wants to sync the current repository's YouTube playlist workflow, process videos added on a target date, recover transcripts, retry failed summaries, or handle local YouTube playlist summarization that may require YouTube Data API date matching, Playwright-managed Chrome cookies, yt-dlp subtitle lookup, or MLX Whisper fallback transcription. Do not use this skill for casual YouTube Q&A, generic browser automation, or unrelated video chat.
+description: Process the local knowledge playlist into Chinese Markdown knowledge notes through the yt-video2knowledge repository on this Mac. Use this skill whenever the user asks OpenClaw to handle the knowledge playlist, process videos added on a date, generate a Chinese daily digest, recover YouTube transcripts, retry failed summaries, inspect an existing run state, or transcribe no-subtitle videos with MLX Whisper. This skill is for the local repository-backed workflow, not casual YouTube chat, unrelated browser automation, or generic video summarization outside this repository. Prefer the repository's real CLI entrypoint and existing manifest state over guessed wrappers or full reruns.
 ---
 
-# YouTube AI Digest
+# YouTube AI Digest For OpenClaw
 
-Use this skill for the local macOS workflow in this repository.
+Use this skill when OpenClaw should route a request into the local repository-backed YouTube digest workflow on this Mac.
 
-This skill is for running and reporting the repository's YouTube playlist digest pipeline. It is not a plugin-marketplace skill, and it is not a general browser automation skill.
+This skill is global in OpenClaw, but its execution target is fixed:
 
-## What This Skill Is For
+- Repository root: `/Users/administrator/projects/yt-video2knowledge`
 
-- Process the configured `knowledge` playlist into Chinese Markdown outputs.
-- Match playlist-added dates in `Asia/Shanghai`, using the YouTube Data API as the primary source of truth.
-- Prefer official subtitles, then auto subtitles, then local `mlx-whisper` transcription.
-- Keep transcript outputs even when summary generation fails.
-- Retry pending summaries without redoing the whole run when possible.
+## Core Operating Principle
 
-The main outputs are:
+Treat this repository as a **stateful local pipeline**, not a stateless black-box command.
 
-- `data/runs/YYYY-MM-DD/daily-overview.zh-CN.md`
-- `data/runs/YYYY-MM-DD/manifest.json`
-- `data/runs/YYYY-MM-DD/videos/<video-id>/summary.zh-CN.md`
-- `data/runs/YYYY-MM-DD/videos/<video-id>/transcript.original.txt`
-- `data/runs/YYYY-MM-DD/videos/<video-id>/metadata.json`
+That means:
+
+- trust the repository's actual CLI and files over older wrapper examples
+- inspect existing run state before choosing a mode
+- prefer incremental recovery over full reruns
+- shrink failures to `--retry-summaries` or `--video-id` whenever possible
+
+If the skill instructions and the repository disagree, **the repository is the source of truth**.
+
+## What This Skill Does
+
+- Processes the local `knowledge` playlist into Chinese Markdown notes.
+- Uses the YouTube Data API as the primary source for playlist-added dates.
+- Uses the repository's existing workflow for subtitles, MLX Whisper fallback transcription, and Chinese summary generation.
+- Supports full date runs, pending-summary retries, single-video reruns, and explicit first-seen fallback mode.
+- Reuses existing run artifacts and manifest state to avoid unnecessary work and token burn.
 
 ## When To Use This Skill
 
-Use this skill when the user is asking for one of these repository-first tasks:
+Use this skill whenever the user is clearly asking OpenClaw to do one of these things:
 
-- Sync the `knowledge` playlist for a specific date.
-- Generate a Chinese daily digest for newly added playlist videos.
-- Recover transcripts for playlist videos, including no-subtitle cases.
-- Retry failed or pending summaries from an earlier run.
-- Reprocess one known YouTube video inside this repository's local workflow.
+- Sync or process the `knowledge` playlist.
+- Handle videos added yesterday or on a specific date.
+- Generate a Chinese YouTube digest or daily report.
+- Recover transcripts from playlist videos.
+- Retry failed summaries.
+- Transcribe a no-subtitle video with MLX Whisper.
+- Re-run a specific date while preserving as much completed work as possible.
+- Diagnose why a previous digest run is stuck or incomplete.
 
-This skill can also trigger for closely related local tasks if the user is clearly asking for:
+Typical trigger phrases include:
 
-- Local YouTube playlist transcript extraction.
-- Subtitle recovery with `yt-dlp`.
-- No-subtitle fallback transcription with `mlx-whisper` on macOS.
-- Chinese Markdown summaries built from local YouTube transcripts.
+- `knowledge 播放列表`
+- `昨天新增视频`
+- `YouTube 摘要`
+- `中文日报`
+- `补跑总结`
+- `无字幕转写`
+- `再跑一下昨天`
+- `为什么卡住了`
 
 ## When Not To Use This Skill
 
 Do not use this skill for:
 
-- Casual questions about a YouTube video or channel.
-- Generic browser automation not tied to this digest workflow.
-- General OpenAI or Playwright setup questions with no playlist-processing goal.
-- Cross-platform packaging or Windows instructions.
-- Plugin marketplace packaging or distribution work.
+- Casual YouTube conversation or content discussion.
+- Generic browser automation.
+- A standalone video summary task that does not depend on this repository.
+- Cross-platform packaging or marketplace distribution.
 
-## Required Local Setup
+## Local Requirements
 
-Assume these prerequisites before running the workflow:
+Before running, assume these should already exist on the machine:
 
-- macOS on Apple Silicon.
-- `uv` has been installed and `uv sync` has been run.
-- `yt-dlp`, `ffmpeg`, Google Chrome, and the Python dependencies from `uv.lock` are available.
-- `.env.local` contains:
+- `uv`
+- `yt-dlp`
+- `ffmpeg`
+- Google Chrome
+- repository path `/Users/administrator/projects/yt-video2knowledge`
+- Python dependencies installed through `uv`
+- `.env.local` in that repository with:
   - `OPENAI_API_KEY`
   - `OPENAI_BASE_URL`
   - `OPENAI_MODEL`
-- `data/youtube-oauth-client.json` exists.
-- One-time YouTube OAuth has already been completed:
-  - `uv run python scripts/run_knowledge_digest.py --youtube-auth`
+- `data/youtube-oauth-client.json`
+- one-time YouTube OAuth already completed when API access is needed
 
-If the managed Chrome profile is needed, the usual initialization path is:
+Do **not** assume bare `python3` is enough. Prefer the project environment:
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
+uv run python scripts/run_knowledge_digest.py --help
 ```
 
-## Execution Workflow
+## Real CLI Entry Point
 
-Use the default run path unless the user explicitly asks for a different one:
+Do not default to an old wrapper script name.
+
+Use the repository's actual CLI entrypoint:
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD
 ```
 
-Important execution rules:
+Use `uv run` by default so repository-pinned dependencies are available.
 
-- Treat the YouTube Data API as the default source of playlist-added dates.
-- Follow transcript priority in this order:
-  - official subtitles
-  - auto subtitles
-  - audio download
-  - `mlx-whisper`
-- If summary generation fails, keep transcript outputs and use `--retry-summaries` later instead of calling the whole run a total loss.
-- Use `--video-id VIDEO_ID --target-date YYYY-MM-DD` only when the user explicitly wants a single-video reprocess.
+When this workflow is triggered from OpenClaw for a full-day knowledge playlist run, prefer the local queue worker instead of running the digest command directly from the chat session. Queueing keeps long video/ASR work out of the LLM response path and avoids chat idle timeouts.
 
-Useful recovery commands:
+Queue a date:
+
+```bash
+/Users/administrator/.openclaw/workspace/automation/knowledge-digest/queue_request.py YYYY-MM-DD --requested-by openclaw --note "knowledge digest"
+```
+
+Check queued/worker status:
+
+```bash
+/Users/administrator/.openclaw/workspace/automation/knowledge-digest/show_status.py
+```
+
+## Default Decision Flow
+
+For a request like "process YYYY-MM-DD" or "rerun yesterday", do this in order before choosing the run mode.
+
+### Step 1. Confirm CLI shape
+
+```bash
+uv run python scripts/run_knowledge_digest.py --help
+```
+
+### Step 2. Inspect existing run state
+
+```bash
+find data/runs/YYYY-MM-DD -maxdepth 2 -type f | sort
+```
+
+If needed, inspect deeper when diagnosing a stuck run:
+
+```bash
+find data/runs/YYYY-MM-DD -maxdepth 4 -type f | sort
+```
+
+### Step 3. Choose the smallest correct mode
+
+- If no run directory exists, use the default date run.
+- If transcripts already exist and summaries are pending, prefer `--retry-summaries`.
+- If one video is the problem, prefer `--video-id VIDEO_ID`.
+- Only use `--full-reprocess` when the user explicitly wants a full rebuild, or when the manifest/run state is clearly unusable.
+
+## Execution Modes
+
+Default run:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD
+```
+
+Retry pending summaries:
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
-uv run python scripts/run_knowledge_digest.py --video-id VIDEO_ID --target-date YYYY-MM-DD
 ```
+
+Single-video reprocess or debugging:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --video-id VIDEO_ID
+```
+
+Explicit compatibility fallback:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --allow-fallback-first-seen
+```
+
+Full rebuild, only when truly needed:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --full-reprocess
+```
+
+## Token-Saving and Recovery Rules
+
+Follow these rules by default:
+
+- Do not default to full reruns.
+- Do not re-transcribe videos when the transcript already exists and only summary generation failed.
+- Do not use the whole day as a probe when a single video can isolate the issue.
+- Prefer reading `manifest.json` and existing outputs over lengthy speculative explanation.
+- If output files show progress is stuck at download artifacts like `.part` or `.ytdl`, treat it as a download-stage problem and move to single-video diagnosis instead of repeatedly waiting.
+
+This repository already supports incremental behavior through manifest-backed run state. Use that design instead of fighting it.
 
 ## Decision Boundaries
 
-Default behavior:
+- Prefer the YouTube Data API for playlist-added dates.
+- Keep transcript priority in this order:
+  - official subtitles
+  - auto subtitles
+  - audio download
+  - MLX Whisper
+- If summary generation fails, keep transcript outputs and use retry mode later.
+- Do not default to `--allow-fallback-first-seen`.
+- Do not default to `--attach-current-chrome`.
+- Do not try to perform interactive Google login inside Playwright for production use.
+- If the repository's documented command and the live repository contents disagree, follow the live repository contents.
 
-- Use strict date matching first.
-- Keep transcripts even when summaries fail.
-- Use the managed Playwright Chrome profile for cookies and page fallback.
+## Reporting Style
 
-Do not default to these paths unless the user explicitly asks for them:
+Prefer short state-based reports over long process narration.
 
-- `--allow-fallback-first-seen`
-- `--attach-current-chrome`
-- Interactive Google login inside a Playwright-controlled browser
+Use a compact structure like this when helpful:
 
-Browser role boundaries:
+```md
+已检查 / 已运行：
+- 日期: YYYY-MM-DD
+- run_mode: full / incremental
+- processed: X
+- summary_ready: X
+- pending_summary: X
+- failed: X
+- needs_review: X
 
-- Playwright is for cookies, managed profile use, and page fallback.
-- It is not the primary source of playlist-added dates.
-- It is not the preferred production login path for Google account authentication.
+下一步：
+- 若只缺总结，跑 `--retry-summaries`
+- 若卡在单个视频，跑 `--video-id`
+- 若需要彻底重建，跑 `--full-reprocess`
+```
 
 ## How To Report Results
 
-After running the workflow, report these items:
+After running, report:
 
+- repository path used
 - output directory
-- processed video count
-- failed video count
+- run mode when available
+- processed count
+- failed count
 - pending summary count
 - any `needs_review` items
-- transcript source for relevant videos
-- subtitle detection results or ASR fallback reason when relevant
-- timing metrics when they help explain slow runs
-- browser diagnostics path if YouTube self-check failed
+- transcript source or ASR fallback reason when relevant
+- the next concrete fix if the run is blocked by missing setup
 
-If the run cannot continue, tell the user the next concrete dependency or credential they need to fix.
-
-## Related Commands
-
-Legacy commands still exist, but they are not the default skill path:
-
-```bash
-uv run python scripts/fetch_videos.py --days 7 --keyword AI
-uv run python scripts/get_transcript.py --video-id VIDEO_ID
-uv run python scripts/generate_report.py --video-id VIDEO_ID --summary "..."
-```
+Prefer fields already present in `manifest.json` or `daily-overview.zh-CN.md` instead of reconstructing the story from scratch.

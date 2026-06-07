@@ -272,6 +272,113 @@ class JsonWriteTests(unittest.TestCase):
         self.assertTrue(payload["generated_at"].startswith("2026-03-21T09:00:00"))
 
 
+class YoutubeApiPaginationToleranceTests(unittest.TestCase):
+    def test_fetch_playlist_entries_via_youtube_api_keeps_partial_results_on_late_playlist_not_found(self) -> None:
+        config = knowledge_digest_module.DigestConfig(
+            playlist_url="https://www.youtube.com/playlist?list=PL123",
+            playlist_name="knowledge",
+            timezone="Asia/Shanghai",
+            browser="chrome",
+            browser_mode="managed",
+            chrome_channel="chrome",
+            chrome_user_data_dir="data/chrome-automation-profile",
+            chrome_source_profile_dir="/tmp/chrome",
+            chrome_automation_profile_dir="data/chrome-automation-profile",
+            chrome_cdp_url="http://127.0.0.1:9222",
+            youtube_client_secrets_path="data/youtube-oauth-client.json",
+            youtube_token_path="data/youtube-oauth-token.json",
+            openai_base_url="",
+            openai_model="",
+            summary_language="zh-CN",
+            mlx_whisper_model="mlx-community/whisper-small-mlx",
+            output_root="data/runs",
+        )
+
+        class FakePlaylistItems:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def list(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return mock.Mock(
+                        execute=mock.Mock(
+                            return_value={
+                                "items": [
+                                    {
+                                        "id": "pli_1",
+                                        "snippet": {
+                                            "title": "Video 1",
+                                            "publishedAt": "2026-05-29T14:53:32Z",
+                                            "channelTitle": "Channel 1",
+                                            "resourceId": {"videoId": "vid_1"},
+                                        },
+                                    }
+                                ],
+                                "nextPageToken": "page-2",
+                            }
+                        )
+                    )
+                raise Exception("playlistNotFound: simulated pagination failure")
+
+        class FakeService:
+            def __init__(self) -> None:
+                self._playlist_items = FakePlaylistItems()
+
+            def playlistItems(self):
+                return self._playlist_items
+
+        with mock.patch.object(knowledge_digest_module, "_load_youtube_credentials", return_value=object()):
+            with mock.patch.object(
+                knowledge_digest_module,
+                "_load_youtube_oauth_dependencies",
+                return_value=(None, None, None, mock.Mock(return_value=FakeService())),
+            ):
+                entries = knowledge_digest_module.fetch_playlist_entries_via_youtube_api(config)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["id"], "vid_1")
+        self.assertEqual(entries[0]["playlist_added_date"], date(2026, 5, 29))
+
+    def test_fetch_playlist_entries_via_youtube_api_still_raises_if_first_page_fails(self) -> None:
+        config = knowledge_digest_module.DigestConfig(
+            playlist_url="https://www.youtube.com/playlist?list=PL123",
+            playlist_name="knowledge",
+            timezone="Asia/Shanghai",
+            browser="chrome",
+            browser_mode="managed",
+            chrome_channel="chrome",
+            chrome_user_data_dir="data/chrome-automation-profile",
+            chrome_source_profile_dir="/tmp/chrome",
+            chrome_automation_profile_dir="data/chrome-automation-profile",
+            chrome_cdp_url="http://127.0.0.1:9222",
+            youtube_client_secrets_path="data/youtube-oauth-client.json",
+            youtube_token_path="data/youtube-oauth-token.json",
+            openai_base_url="",
+            openai_model="",
+            summary_language="zh-CN",
+            mlx_whisper_model="mlx-community/whisper-small-mlx",
+            output_root="data/runs",
+        )
+
+        class FakePlaylistItems:
+            def list(self, **kwargs):
+                raise Exception("playlistNotFound: simulated first-page failure")
+
+        class FakeService:
+            def playlistItems(self):
+                return FakePlaylistItems()
+
+        with mock.patch.object(knowledge_digest_module, "_load_youtube_credentials", return_value=object()):
+            with mock.patch.object(
+                knowledge_digest_module,
+                "_load_youtube_oauth_dependencies",
+                return_value=(None, None, None, mock.Mock(return_value=FakeService())),
+            ):
+                with self.assertRaises(knowledge_digest_module.DigestError):
+                    knowledge_digest_module.fetch_playlist_entries_via_youtube_api(config)
+
+
 class CliTests(unittest.TestCase):
     def test_cli_passes_full_reprocess_flag(self) -> None:
         with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
