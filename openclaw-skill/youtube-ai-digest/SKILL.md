@@ -102,16 +102,18 @@ Use `uv run` by default so repository-pinned dependencies are available.
 
 When this workflow is triggered from OpenClaw for a full-day knowledge playlist run, prefer the local queue worker instead of running the digest command directly from the chat session. Queueing keeps long video/ASR work out of the LLM response path and avoids chat idle timeouts.
 
+Run queue and status commands separately. Do not combine them with `&&`; OpenClaw may reject chained interpreter invocations.
+
 Queue a date:
 
 ```bash
-/Users/administrator/.openclaw/workspace/automation/knowledge-digest/queue_request.py YYYY-MM-DD --requested-by openclaw --note "knowledge digest"
+python3 /Users/administrator/.openclaw/workspace/automation/knowledge-digest/queue_request.py YYYY-MM-DD --requested-by openclaw --note "knowledge digest"
 ```
 
 Check queued/worker status:
 
 ```bash
-/Users/administrator/.openclaw/workspace/automation/knowledge-digest/show_status.py
+python3 /Users/administrator/.openclaw/workspace/automation/knowledge-digest/show_status.py
 ```
 
 ## Default Decision Flow
