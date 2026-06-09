@@ -25,6 +25,7 @@
       {% if blocks %}
         <div class="block-list">
           {% for block in blocks %}
+            {% set block_text = block.body_plain_text|default(block.plain_text, true) %}
             <article class="summary-block">
               <label>
                 <input type="checkbox" data-block-check>
@@ -38,8 +39,8 @@
                   </span>
                 </span>
               </label>
-              <pre>{{ block.plain_text }}</pre>
-              <textarea class="block-text" hidden>{{ block.plain_text }}</textarea>
+              <pre>{{ block_text }}</pre>
+              <textarea class="block-text" hidden>{{ block_text }}</textarea>
             </article>
           {% endfor %}
         </div>

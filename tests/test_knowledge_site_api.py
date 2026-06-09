@@ -4,12 +4,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from knowledge_site.config import Settings
 from knowledge_site.main import create_app
 from knowledge_site.markdown_blocks import split_markdown_blocks
+from knowledge_site.routes.pages import templates
 from knowledge_site.sync import sync_knowledge_site
 
 
@@ -118,6 +120,10 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertIn('<span class="block-heading-context">一句话总结</span>', video_page.text)
             self.assertIn('<span class="block-heading-separator" aria-hidden="true">/</span>', video_page.text)
             self.assertIn('<span class="block-heading-current">可执行启发</span>', video_page.text)
+            self.assertIn("<pre>Try it.</pre>", video_page.text)
+            self.assertIn('<textarea class="block-text" hidden>Try it.</textarea>', video_page.text)
+            self.assertNotIn("<pre>可执行启发", video_page.text)
+            self.assertNotIn('<textarea class="block-text" hidden>可执行启发', video_page.text)
             self.assertNotIn("直接内容", video_page.text)
 
             response = client.get("/api/v1/videos/ready/meta-summary")
@@ -141,6 +147,31 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertEqual(client.delete("/api/v1/videos/ready/meta-summary").status_code, 405)
             self.assertEqual(client.get("/api/v1/videos/missing/meta-summary").status_code, 404)
 
+    def test_video_template_falls_back_to_plain_text_for_legacy_blocks(self) -> None:
+        video = SimpleNamespace(
+            title="Ready Video",
+            thumbnail_url=None,
+            channel_name="Channel",
+            url="https://www.youtube.com/watch?v=ready",
+            video_id="ready",
+            meta_content="",
+        )
+        block = SimpleNamespace(
+            heading_path="一句话总结 / 可执行启发",
+            heading_ancestors=("一句话总结",),
+            heading_text="可执行启发",
+            plain_text="可执行启发\n\nTry it.",
+        )
+
+        html = templates.env.get_template("video.html").render(
+            request=SimpleNamespace(session={}),
+            video=video,
+            blocks=[block],
+        )
+
+        self.assertIn("<pre>可执行启发\n\nTry it.</pre>", html)
+        self.assertIn('<textarea class="block-text" hidden>可执行启发\n\nTry it.</textarea>', html)
+
 
 class MarkdownBlockTests(unittest.TestCase):
     def test_parent_block_keeps_only_direct_content(self) -> None:
@@ -155,8 +186,17 @@ class MarkdownBlockTests(unittest.TestCase):
         child = next(block for block in blocks if block.heading_path == "Parent / Child")
         self.assertEqual(parent.plain_text, "Parent\n\nDirect note.")
         self.assertEqual(child.plain_text, "Child\n\nChild note.")
+        self.assertEqual(parent.body_plain_text, "Direct note.")
+        self.assertEqual(child.body_plain_text, "Child note.")
         self.assertEqual(parent.heading_ancestors, ())
         self.assertEqual(child.heading_ancestors, ("Parent",))
+
+    def test_body_plain_text_matches_plain_text_without_headings(self) -> None:
+        blocks = split_markdown_blocks("Loose note.\n\nAnother line.")
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].plain_text, "Loose note.\n\nAnother line.")
+        self.assertEqual(blocks[0].body_plain_text, blocks[0].plain_text)
 
     def test_heading_ancestors_exclude_current_heading(self) -> None:
         blocks = split_markdown_blocks("# Parent\n\n## Child\n\n### Leaf\n\nLeaf note.")

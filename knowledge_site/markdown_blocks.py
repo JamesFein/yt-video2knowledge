@@ -16,6 +16,7 @@ class MarkdownBlock:
     heading_path: str
     markdown: str
     plain_text: str
+    body_plain_text: str
     heading_ancestors: tuple[str, ...] = ()
 
 
@@ -48,6 +49,7 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
                 heading_path="Summary",
                 markdown=markdown.strip(),
                 plain_text=plain_text,
+                body_plain_text=plain_text,
             )
         ] if plain_text else []
 
@@ -55,7 +57,8 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
     for position, (start, level, text, path, ancestors) in enumerate(headings):
         end = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         body_markdown = "\n".join(lines[start + 1 : end]).strip()
-        if not markdown_to_plain_text(body_markdown):
+        body_plain_text = markdown_to_plain_text(body_markdown)
+        if not body_plain_text:
             continue
         block_markdown = "\n".join(lines[start:end]).strip()
         plain_text = markdown_to_plain_text(block_markdown)
@@ -67,6 +70,7 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
                     heading_path=path,
                     markdown=block_markdown,
                     plain_text=plain_text,
+                    body_plain_text=body_plain_text,
                     heading_ancestors=ancestors,
                 )
             )
