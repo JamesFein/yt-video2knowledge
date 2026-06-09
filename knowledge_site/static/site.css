@@ -482,12 +482,36 @@ a:focus-visible {
 }
 
 .block-heading {
+  display: block;
+  min-width: 0;
+}
+
+.block-heading-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 6px;
+  overflow-wrap: anywhere;
+}
+
+.block-heading-context,
+.block-heading-separator {
+  color: var(--faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.block-heading-current {
   color: var(--ink);
   font-family: var(--font-serif);
   font-size: 20px;
   font-weight: 650;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.18;
+  overflow-wrap: anywhere;
 }
 
 pre {

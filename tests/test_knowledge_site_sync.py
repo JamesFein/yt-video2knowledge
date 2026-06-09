@@ -188,6 +188,150 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
                 conn.close()
 
 
+    def test_target_date_sync_only_touches_requested_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            runs = root / "data" / "runs"
+            day_one = runs / "2026-06-01"
+            day_two = runs / "2026-06-02"
+            day_one.mkdir(parents=True)
+            day_two.mkdir(parents=True)
+            write_video(day_one, "vid1", summary="## D1\n\nSummary one")
+            write_video(day_two, "vid2", summary="## D2\n\nSummary two")
+
+            # Seed both days first.
+            sync_knowledge_site(settings)
+
+            # Remove day_one's video on disk, then sync only day_two.
+            report = sync_knowledge_site(settings, target_date="2026-06-02")
+
+            self.assertEqual([d.day_date for d in report.days], ["2026-06-02"])
+            conn = connect_db(settings.db_path)
+            try:
+                # day_one untouched.
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM day_videos WHERE day_date = '2026-06-01'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM day_videos WHERE day_date = '2026-06-02'"
+                    ).fetchone()[0],
+                    1,
+                )
+                # Only one sync_run for the targeted date in the second pass.
+                runs_for_two = conn.execute(
+                    "SELECT COUNT(*) FROM sync_runs WHERE run_date = '2026-06-02'"
+                ).fetchone()[0]
+                self.assertEqual(runs_for_two, 2)
+            finally:
+                conn.close()
+
+    def test_mixed_states_counts_imported_pending_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            day_dir = root / "data" / "runs" / "2026-06-01"
+            day_dir.mkdir(parents=True)
+            write_video(day_dir, "ready", summary="## Ready\n\nReady")
+            write_video(day_dir, "pending", status="pending_summary", summary=None)
+            write_video(day_dir, "noummary", status="summary_ready", summary=None)
+            write_video(day_dir, "failed", status="transcript_failed", summary=None)
+
+            report = sync_knowledge_site(settings, target_date="2026-06-01")
+            day = report.days[0]
+            self.assertEqual(day.imported_video_count, 1)
+            self.assertEqual(day.skipped_pending_count, 2)
+            self.assertEqual(day.skipped_failed_count, 1)
+
+    def test_malformed_manifest_rolls_back_target_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            runs = root / "data" / "runs"
+            good = runs / "2026-06-01"
+            bad = runs / "2026-06-02"
+            good.mkdir(parents=True)
+            bad.mkdir(parents=True)
+            write_video(good, "good", summary="## Good\n\nGood")
+            sync_knowledge_site(settings, target_date="2026-06-01")
+
+            write_video(bad, "bad", summary="## Bad\n\nBad")
+            (bad / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+            with self.assertRaises(json.JSONDecodeError):
+                sync_knowledge_site(settings, target_date="2026-06-02")
+
+            conn = connect_db(settings.db_path)
+            try:
+                # Bad day left no rows behind.
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM days WHERE day_date = '2026-06-02'").fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM day_videos WHERE day_date = '2026-06-02'").fetchone()[0],
+                    0,
+                )
+                # Good day untouched.
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM days WHERE day_date = '2026-06-01'").fetchone()[0],
+                    1,
+                )
+            finally:
+                conn.close()
+
+    def test_unknown_status_is_counted_not_silently_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            day_dir = root / "data" / "runs" / "2026-06-01"
+            day_dir.mkdir(parents=True)
+            write_video(day_dir, "ready", summary="## Ready\n\nReady")
+            # A directory whose status is neither ready/pending/failed.
+            write_video(day_dir, "weird", status="transcript_ready", summary=None)
+
+            report = sync_knowledge_site(settings, target_date="2026-06-01")
+            day = report.days[0]
+
+            # The video is on disk, so it must land in some bucket.
+            self.assertEqual(day.directory_video_count, 2)
+            self.assertEqual(day.imported_video_count, 1)
+            self.assertEqual(day.unclassified_video_count, 1)
+            # Invariant: every directory video is accounted for.
+            accounted = (
+                day.imported_video_count
+                + day.directory_pending_count
+                + day.directory_failed_count
+                + day.unclassified_video_count
+            )
+            self.assertEqual(accounted, day.directory_video_count)
+
+    def test_missing_assets_still_import_ready_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            day_dir = root / "data" / "runs" / "2026-06-01"
+            day_dir.mkdir(parents=True)
+            write_video(day_dir, "noassets", summary="## No assets\n\nSummary", thumbnail_ext=None)
+            # Remove transcript to simulate missing asset.
+            (day_dir / "videos" / "noassets" / "transcript.original.txt").unlink()
+
+            report = sync_knowledge_site(settings, target_date="2026-06-01")
+            self.assertEqual(report.imported_video_count, 1)
+
+            conn = connect_db(settings.db_path)
+            try:
+                video = conn.execute("SELECT * FROM videos WHERE video_id = 'noassets'").fetchone()
+                self.assertIsNone(video["transcript_path"])
+                self.assertIsNone(video["thumbnail_path"])
+            finally:
+                conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
 

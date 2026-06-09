@@ -87,14 +87,16 @@ curl -i http://127.0.0.1:8000/ | sed -n '1,8p'
 1. 打开 Cloudflare Dashboard。
 2. 进入 `Zero Trust -> Networks -> Connectors -> Cloudflare Tunnels`。
 3. 打开 `knowledge-site-mac`。
-4. 在 Connectors 区域添加/查看 connector 命令。
-5. 复制 `cloudflared tunnel run --token ...` 这条手动运行命令。
-6. 在另一个终端运行它。
+4. 在 Connectors 区域添加/查看 connector token。
+5. 在另一个终端用 `TUNNEL_TOKEN` 启动 named tunnel。
 
-命令形状应该类似：
+推荐用隐藏输入，避免 token 留在 shell history：
 
 ```bash
-cloudflared tunnel run --token <Cloudflare 给出的敏感 token>
+read -s TUNNEL_TOKEN
+export TUNNEL_TOKEN
+cloudflared tunnel run
+unset TUNNEL_TOKEN
 ```
 
 不要把 token 写进仓库。这个终端也要保持打开。
@@ -141,13 +143,13 @@ curl -I https://www.miniaiheadlines.top/
 
 ```text
 Python .../.venv/bin/uvicorn knowledge_site.main:create_app --factory --host 127.0.0.1 --port 8000
-cloudflared tunnel run --token <Cloudflare connector token>
+cloudflared tunnel run
 ```
 
 它们分别负责：
 
 - `Python ... uvicorn ...`：真正运行 FastAPI 应用的 Python/Uvicorn 进程，监听本机 `127.0.0.1:8000`。
-- `cloudflared tunnel run --token ...`：Cloudflare Tunnel 客户端进程，负责把固定域名的公网 HTTPS 请求转发到本机 `http://127.0.0.1:8000`。
+- `cloudflared tunnel run`：Cloudflare Tunnel 客户端进程，负责把固定域名的公网 HTTPS 请求转发到本机 `http://127.0.0.1:8000`。
 
 也就是说：
 
@@ -161,49 +163,66 @@ cloudflared tunnel run --token <Cloudflare connector token>
 
 也可以用 `uv run uvicorn ...` 启动应用，但它会多一个 `uv` 父进程。`uv run` 适合首次确认依赖环境；长期运行时，直接调用 `.venv/bin/uvicorn` 更简单。
 
+## 操作前检查
+
+每次修改代码、跑完测试、启动或重启部署前，先确认当前进程状态：
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN || true
+pgrep -x cloudflared || true
+screen -ls | sed -n '/knowledge-site/p' || true
+```
+
+不要用宽泛的 `pkill -f cloudflared`、`pgrep -f cloudflared` 或 `pkill -f 8000` 做判断或清理。历史日志、agent 消息和工具进程里也可能出现这些字符串，容易误伤。
+
 ## 如何确认服务还在运行
 
-查看相关进程：
+本机端口检查：
 
 ```bash
-pgrep -fl 'uvicorn knowledge_site.main:create_app|cloudflared tunnel run --token'
+lsof -nP -iTCP:8000 -sTCP:LISTEN || true
 ```
 
-查看本机端口：
+本机访问检查要使用 `GET`，不要用 `HEAD`；当前应用可以对 `HEAD /` 返回 `405`：
 
 ```bash
-lsof -iTCP:8000 -sTCP:LISTEN -n -P
-```
-
-本机访问检查：
-
-```bash
-curl -I http://127.0.0.1:8000/
+curl -sS -o /tmp/knowledge-site-local.html -w '%{http_code}\n' --max-time 5 http://127.0.0.1:8000/
 ```
 
 公网访问检查：
 
 ```bash
-curl -I https://miniaiheadlines.top/
+curl -sS -o /tmp/knowledge-site-root.html -w '%{http_code}\n' --max-time 10 https://miniaiheadlines.top/
+curl -sS -o /tmp/knowledge-site-www.html -w '%{http_code}\n' --max-time 10 https://www.miniaiheadlines.top/
 ```
 
 未登录访问 `/` 正常应返回 `303`，并跳转到 `/login?next=/`。
 
+最终进程状态必须二选一：
+
+- 已停止：`127.0.0.1:8000` 没有监听进程，且没有精确名为 `cloudflared` 的进程。
+- 已运行：`127.0.0.1:8000` 只有一个 Uvicorn/FastAPI 监听进程，且只有一个 `cloudflared tunnel run` named tunnel connector。
+
 ## 如何停止当前部署
 
-先找进程：
+先找精确进程：
 
 ```bash
-pgrep -fl 'uvicorn knowledge_site.main:create_app|cloudflared tunnel run --token'
+lsof -nP -iTCP:8000 -sTCP:LISTEN || true
+ps axww -o pid=,comm=,args= | awk '$2 ~ /(^|\/)cloudflared$/ {print}'
+screen -ls | sed -n '/knowledge-site/p' || true
 ```
 
-然后停止 `cloudflared` 和 FastAPI 相关进程：
+然后停止 `8000` 监听进程、精确名为 `cloudflared` 的进程，以及可选的 `screen` 会话：
 
 ```bash
-kill <cloudflared-pid> <uvicorn-pid>
+kill $(lsof -tiTCP:8000 -sTCP:LISTEN) 2>/dev/null || true
+kill $(pgrep -x cloudflared) 2>/dev/null || true
+screen -S knowledge-site-uvicorn -X quit 2>/dev/null || true
+screen -S knowledge-site-cloudflared -X quit 2>/dev/null || true
 ```
 
-不要照抄历史进程号；先重新运行 `pgrep`，再停止当前查到的新进程号。
+不要照抄历史进程号；先重新运行检查命令，再停止当前查到的新进程。
 
 ## 如何重新启动
 
@@ -217,11 +236,16 @@ set +a
 .venv/bin/uvicorn knowledge_site.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-另开一个终端启动 Cloudflare named tunnel connector：
+另开一个终端启动 Cloudflare named tunnel connector。推荐用隐藏输入的 `TUNNEL_TOKEN` 或临时 token 文件传入，避免 token 出现在最终回复、仓库文件或长期命令行记录里：
 
 ```bash
-cloudflared tunnel run --token <Cloudflare 给出的敏感 token>
+read -s TUNNEL_TOKEN
+export TUNNEL_TOKEN
+cloudflared tunnel run
+unset TUNNEL_TOKEN
 ```
+
+如果固定域名返回 Cloudflare `530`，通常说明 Cloudflare 已收到请求，但本机 named tunnel connector 或 origin 不可用。先检查 `127.0.0.1:8000`，再检查精确名为 `cloudflared` 的 named tunnel connector。
 
 ## 临时 Quick Tunnel 备用方案
 
@@ -247,10 +271,12 @@ https://xxxx-xxxx-xxxx-xxxx.trycloudflare.com
 
 复制这个地址访问即可。
 
+切回固定域名前，必须停止 Quick Tunnel，再启动 `cloudflared tunnel run` named tunnel connector，避免公网入口和实际 connector 状态混淆。
+
 ## 注意事项
 
-- 当前 Quick Tunnel 不需要在 Cloudflare 官网做配置。
-- 当前地址不是固定域名，不适合长期收藏。
-- 如果要长期使用，建议后续改为命名 Tunnel + 自有域名 + Cloudflare Access。
+- Quick Tunnel 不需要在 Cloudflare 官网做配置。
+- Quick Tunnel 地址不是固定域名，不适合长期收藏。
+- 固定域名长期使用 named tunnel + 自有域名；可按需再加 Cloudflare Access。
 - 不要把 `KNOWLEDGE_SITE_PASSWORD` 和 `KNOWLEDGE_SITE_SECRET_KEY` 提交到仓库。
-- 如果公网地址返回 `530`，通常说明 `cloudflared` 没有运行、刚刚断开，或 quick tunnel 临时连接失败；重新启动 `cloudflared` 并使用新的 URL。
+- 如果公网地址返回 `530`，先确认本机 `8000` origin，再确认 `cloudflared tunnel run` named connector。

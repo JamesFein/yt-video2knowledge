@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -22,8 +23,29 @@ THUMBNAIL_EXTENSIONS = (".webp", ".jpg", ".jpeg", ".png")
 class DaySyncResult:
     day_date: str
     imported_video_count: int
+    # Union totals across manifest + directory sources (what sync_runs records).
     skipped_pending_count: int
     skipped_failed_count: int
+    # Directory-side breakdown: every subdir under videos/ lands in exactly one
+    # of these four buckets, so the invariant below always holds.
+    directory_video_count: int
+    directory_pending_count: int
+    directory_failed_count: int
+    unclassified_video_count: int
+
+    def __post_init__(self) -> None:
+        accounted = (
+            self.imported_video_count
+            + self.directory_pending_count
+            + self.directory_failed_count
+            + self.unclassified_video_count
+        )
+        if accounted != self.directory_video_count:
+            raise AssertionError(
+                f"{self.day_date}: directory videos ({self.directory_video_count}) "
+                f"!= imported+pending+failed+unclassified ({accounted}); "
+                "a video would be silently dropped from the audit."
+            )
 
 
 @dataclass(frozen=True)
@@ -35,12 +57,19 @@ class SyncReport:
         return sum(day.imported_video_count for day in self.days)
 
 
-def sync_knowledge_site(settings: Settings, runs_dir: Path | None = None) -> SyncReport:
+def sync_knowledge_site(
+    settings: Settings,
+    runs_dir: Path | None = None,
+    target_date: str | None = None,
+) -> SyncReport:
     source_dir = runs_dir or settings.root_dir / "data" / "runs"
     initialize_database(settings.db_path)
     settings.assets_dir.mkdir(parents=True, exist_ok=True)
 
     day_dirs = list(_iter_day_dirs(source_dir))
+    if target_date is not None:
+        day_dirs = [path for path in day_dirs if path.name == target_date]
+
     conn = connect_db(settings.db_path)
     try:
         with conn:
@@ -48,6 +77,42 @@ def sync_knowledge_site(settings: Settings, runs_dir: Path | None = None) -> Syn
     finally:
         conn.close()
     return SyncReport(days=results)
+
+
+def format_sync_report(settings: Settings, report: SyncReport, *, mode: str) -> str:
+    lines = [
+        f"Knowledge Site sync ({mode}): "
+        f"{len(report.days)} day(s), {report.imported_video_count} imported video(s).",
+        f"  db_path: {settings.db_path}",
+    ]
+    for day in report.days:
+        line = (
+            f"  - {day.day_date}: imported={day.imported_video_count}, "
+            f"pending={day.skipped_pending_count}, failed={day.skipped_failed_count}"
+        )
+        if day.unclassified_video_count:
+            line += f", unclassified={day.unclassified_video_count}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def format_sync_failure(
+    settings: Settings,
+    target_date: str | None,
+    error: Exception,
+    *,
+    mode: str,
+) -> str:
+    target = target_date or "<full>"
+    retry = "python scripts/sync_knowledge_site.py"
+    if target_date:
+        retry += f" --target-date {target_date}"
+    return (
+        f"Knowledge Site sync ({mode}) FAILED for target date {target}.\n"
+        f"  reason: {error}\n"
+        f"  db_path: {settings.db_path}\n"
+        f"  retry: {retry}"
+    )
 
 
 def _iter_day_dirs(runs_dir: Path) -> list[Path]:
@@ -90,9 +155,14 @@ def _sync_day(
     conn.execute("DELETE FROM day_videos WHERE day_date = ?", (day_date,))
 
     imported = 0
+    directory_total = 0
+    directory_pending = 0
+    directory_failed = 0
+    unclassified = 0
     videos_dir = day_dir / "videos"
     if videos_dir.exists():
         for position, video_dir in enumerate(sorted(path for path in videos_dir.iterdir() if path.is_dir())):
+            directory_total += 1
             video_id = video_dir.name
             metadata = _load_json(video_dir / "metadata.json")
             record = {**manifest_records.get(video_id, {}), **metadata}
@@ -103,16 +173,24 @@ def _sync_day(
 
             if status == PENDING_STATUS:
                 pending_ids.add(video_id)
+                directory_pending += 1
                 continue
             if status == FAILED_STATUS or record.get("failure_stage") == FAILED_STATUS:
                 failed_ids.add(video_id)
+                directory_failed += 1
                 continue
             if status != READY_STATUS:
+                # Unknown / unexpected status: feed the failed union total for
+                # audit purposes, but track it in its own directory bucket so
+                # the video is never silently dropped.
+                failed_ids.add(video_id)
+                unclassified += 1
                 continue
 
             summary_path = video_dir / "summary.zh-CN.md"
             if not summary_path.exists():
                 pending_ids.add(video_id)
+                directory_pending += 1
                 continue
 
             _upsert_video(conn, settings, day_date, position, video_dir, record, summary_path)
@@ -136,6 +214,10 @@ def _sync_day(
         imported_video_count=imported,
         skipped_pending_count=len(pending_ids),
         skipped_failed_count=len(failed_ids),
+        directory_video_count=directory_total,
+        directory_pending_count=directory_pending,
+        directory_failed_count=directory_failed,
+        unclassified_video_count=unclassified,
     )
 
 
@@ -246,8 +328,7 @@ def _copy_transcript(settings: Settings, video_id: str, video_dir: Path) -> str 
     if not source.exists():
         return None
     destination = settings.assets_dir / "transcripts" / f"{video_id}.txt"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
+    _atomic_copy(source, destination)
     return _relative_to_root(settings, destination)
 
 
@@ -257,10 +338,19 @@ def _copy_thumbnail(settings: Settings, video_id: str, video_dir: Path) -> str |
         if not source.exists():
             continue
         destination = settings.assets_dir / "thumbnails" / f"{video_id}{extension}"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        _atomic_copy(source, destination)
         return _relative_to_root(settings, destination)
     return None
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_name(f"{destination.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(source, temp)
+        os.replace(temp, destination)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _relative_to_root(settings: Settings, path: Path) -> str:

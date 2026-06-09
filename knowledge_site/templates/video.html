@@ -28,7 +28,15 @@
             <article class="summary-block">
               <label>
                 <input type="checkbox" data-block-check>
-                <span class="block-heading">{{ block.heading_path }}</span>
+                <span class="block-heading" aria-label="{{ block.heading_path }}">
+                  <span class="block-heading-breadcrumb">
+                    {% for ancestor in block.heading_ancestors %}
+                      <span class="block-heading-context">{{ ancestor }}</span>
+                      <span class="block-heading-separator" aria-hidden="true">/</span>
+                    {% endfor %}
+                    <span class="block-heading-current">{{ block.heading_text }}</span>
+                  </span>
+                </span>
               </label>
               <pre>{{ block.plain_text }}</pre>
               <textarea class="block-text" hidden>{{ block.plain_text }}</textarea>

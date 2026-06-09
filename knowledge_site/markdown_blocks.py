@@ -16,11 +16,12 @@ class MarkdownBlock:
     heading_path: str
     markdown: str
     plain_text: str
+    heading_ancestors: tuple[str, ...] = ()
 
 
 def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
     lines = markdown.splitlines()
-    headings: list[tuple[int, int, str, str]] = []
+    headings: list[tuple[int, int, str, str, tuple[str, ...]]] = []
     path_by_level: dict[int, str] = {}
 
     for index, line in enumerate(lines):
@@ -34,8 +35,9 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
         path_by_level[level] = text
         for stale_level in [value for value in path_by_level if value > level]:
             del path_by_level[stale_level]
-        path = " / ".join(path_by_level[key] for key in sorted(path_by_level))
-        headings.append((index, level, text, path))
+        path_parts = [path_by_level[key] for key in sorted(path_by_level)]
+        path = " / ".join(path_parts)
+        headings.append((index, level, text, path, tuple(path_parts[:-1])))
 
     if not headings:
         plain_text = markdown_to_plain_text(markdown)
@@ -50,7 +52,7 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
         ] if plain_text else []
 
     blocks: list[MarkdownBlock] = []
-    for position, (start, level, text, path) in enumerate(headings):
+    for position, (start, level, text, path, ancestors) in enumerate(headings):
         end = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         body_markdown = "\n".join(lines[start + 1 : end]).strip()
         if not markdown_to_plain_text(body_markdown):
@@ -65,6 +67,7 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
                     heading_path=path,
                     markdown=block_markdown,
                     plain_text=plain_text,
+                    heading_ancestors=ancestors,
                 )
             )
     return blocks

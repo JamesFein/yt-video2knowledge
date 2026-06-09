@@ -279,11 +279,11 @@ cloudflared connector
 检查 FastAPI：
 
 ```bash
-lsof -iTCP:8000 -sTCP:LISTEN -n -P
-curl -I http://127.0.0.1:8000/
+lsof -nP -iTCP:8000 -sTCP:LISTEN || true
+curl -sS -o /tmp/knowledge-site-local.html -w '%{http_code}\n' --max-time 5 http://127.0.0.1:8000/
 ```
 
-未登录时，`curl -I http://127.0.0.1:8000/` 正常应返回登录跳转。
+未登录时，本机 `GET /` 正常应返回 `303` 登录跳转。不要用 `HEAD` 验证本机应用；当前应用可以对 `HEAD /` 返回 `405`。
 
 如果本机应用没有运行，先启动：
 
@@ -337,7 +337,10 @@ set +a
 如果还没有把 connector 安装成系统服务，就需要手动运行 tunnel：
 
 ```bash
-cloudflared tunnel run --token <Cloudflare 给出的敏感 token>
+read -s TUNNEL_TOKEN
+export TUNNEL_TOKEN
+cloudflared tunnel run
+unset TUNNEL_TOKEN
 ```
 
 获取 token 的位置：
@@ -350,7 +353,7 @@ Cloudflare Dashboard
 -> Cloudflare Tunnels
 -> knowledge-site-mac
 -> Add a connector / Install and run connectors
--> 复制 cloudflared tunnel run --token ... 命令
+-> 复制 Cloudflare 给出的 connector token
 ```
 
 这个 token 很敏感，不要发给别人，也不要写入仓库。这个终端也保持打开。
@@ -358,9 +361,9 @@ Cloudflare Dashboard
 ### 3. 验证
 
 ```bash
-curl -I http://127.0.0.1:8000/
-curl -I https://miniaiheadlines.top/
-curl -I https://www.miniaiheadlines.top/
+curl -sS -o /tmp/knowledge-site-local.html -w '%{http_code}\n' --max-time 5 http://127.0.0.1:8000/
+curl -sS -o /tmp/knowledge-site-root.html -w '%{http_code}\n' --max-time 10 https://miniaiheadlines.top/
+curl -sS -o /tmp/knowledge-site-www.html -w '%{http_code}\n' --max-time 10 https://www.miniaiheadlines.top/
 ```
 
 如果公网域名打不开，按顺序检查：
@@ -466,7 +469,7 @@ Cloudflare -> cloudflared on Mac -> 127.0.0.1:8000
 - [ ] Tunnel connector 在这台 Mac 上显示 Connected。
 - [ ] Public Hostname 中存在 `miniaiheadlines.top`。
 - [ ] Public Hostname 中存在 `www.miniaiheadlines.top`。
-- [ ] `curl -I http://127.0.0.1:8000/` 能返回本机应用响应。
+- [ ] 本机 `GET http://127.0.0.1:8000/` 能返回应用响应。
 - [ ] `curl -I https://miniaiheadlines.top/` 能返回公网 HTTPS 响应。
 - [ ] 浏览器打开 `https://miniaiheadlines.top` 能看到 Knowledge Site 登录页。
 - [ ] 登录后能浏览首页、日期页和视频页。

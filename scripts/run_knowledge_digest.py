@@ -5,14 +5,47 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
-from knowledge_digest import (
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from knowledge_digest import (  # noqa: E402
     ConfigurationError,
     DigestError,
     _json_default,
     parse_target_date,
     run_knowledge_digest,
 )
+from knowledge_site.config import load_settings  # noqa: E402
+from knowledge_site.sync import (  # noqa: E402
+    format_sync_failure,
+    format_sync_report,
+    sync_knowledge_site,
+)
+
+
+NON_CONTENT_FLAGS = (
+    "youtube_auth",
+    "seed_from_current_profile",
+    "bootstrap_login",
+    "force_login",
+)
+
+
+def _auto_sync_knowledge_site(target_date: str) -> int:
+    settings = load_settings(require_auth=False)
+    try:
+        report = sync_knowledge_site(settings, target_date=target_date)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            format_sync_failure(settings, target_date, exc, mode="auto"),
+            file=sys.stderr,
+        )
+        return 1
+    print(format_sync_report(settings, report, mode="auto"), file=sys.stderr)
+    return 0
 
 
 def main() -> int:
@@ -30,9 +63,10 @@ def main() -> int:
     parser.add_argument("--video-id", help="Process a single video directly.")
     args = parser.parse_args()
 
+    target_date = parse_target_date(args.target_date)
     try:
         manifest = run_knowledge_digest(
-            target_date=parse_target_date(args.target_date),
+            target_date=target_date,
             playlist_url=args.playlist_url,
             youtube_auth=args.youtube_auth,
             seed_from_current_profile=args.seed_from_current_profile,
@@ -48,6 +82,12 @@ def main() -> int:
         return 1
 
     print(json.dumps(manifest, ensure_ascii=False, indent=2, default=_json_default))
+
+    is_content_run = not any(getattr(args, flag) for flag in NON_CONTENT_FLAGS)
+    if is_content_run:
+        sync_status = _auto_sync_knowledge_site(target_date.isoformat())
+        if sync_status != 0:
+            return sync_status
     return 0
 
 

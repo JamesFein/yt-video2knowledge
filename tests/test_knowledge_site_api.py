@@ -113,7 +113,11 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertNotIn('<details class="daily-overview" open', day_page.text)
             video_page = client.get("/videos/ready")
             self.assertIn("Ready Video", video_page.text)
-            self.assertIn("一句话总结 / 可执行启发", video_page.text)
+            self.assertIn('aria-label="一句话总结 / 可执行启发"', video_page.text)
+            self.assertIn('class="block-heading-context"', video_page.text)
+            self.assertIn('<span class="block-heading-context">一句话总结</span>', video_page.text)
+            self.assertIn('<span class="block-heading-separator" aria-hidden="true">/</span>', video_page.text)
+            self.assertIn('<span class="block-heading-current">可执行启发</span>', video_page.text)
             self.assertNotIn("直接内容", video_page.text)
 
             response = client.get("/api/v1/videos/ready/meta-summary")
@@ -151,6 +155,16 @@ class MarkdownBlockTests(unittest.TestCase):
         child = next(block for block in blocks if block.heading_path == "Parent / Child")
         self.assertEqual(parent.plain_text, "Parent\n\nDirect note.")
         self.assertEqual(child.plain_text, "Child\n\nChild note.")
+        self.assertEqual(parent.heading_ancestors, ())
+        self.assertEqual(child.heading_ancestors, ("Parent",))
+
+    def test_heading_ancestors_exclude_current_heading(self) -> None:
+        blocks = split_markdown_blocks("# Parent\n\n## Child\n\n### Leaf\n\nLeaf note.")
+
+        leaf = blocks[0]
+        self.assertEqual(leaf.heading_path, "Parent / Child / Leaf")
+        self.assertEqual(leaf.heading_text, "Leaf")
+        self.assertEqual(leaf.heading_ancestors, ("Parent", "Child"))
 
     def test_empty_container_heading_has_no_direct_content_block(self) -> None:
         blocks = split_markdown_blocks("# Parent\n\n## Child\n\nChild note.")

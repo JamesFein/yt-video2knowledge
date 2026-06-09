@@ -382,18 +382,44 @@ class YoutubeApiPaginationToleranceTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_cli_passes_full_reprocess_flag(self) -> None:
         with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
-            with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21", "--full-reprocess"]):
-                exit_code = cli_module.main()
+            with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0):
+                with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21", "--full-reprocess"]):
+                    exit_code = cli_module.main()
         self.assertEqual(exit_code, 0)
         self.assertTrue(mocked_run.call_args.kwargs["full_reprocess"])
 
     def test_cli_video_id_still_bypasses_incremental_skip_decision(self) -> None:
         with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
             with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21", "--video-id", "abc123xyz89"]):
-                exit_code = cli_module.main()
+                with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0):
+                    exit_code = cli_module.main()
         self.assertEqual(exit_code, 0)
         self.assertEqual(mocked_run.call_args.kwargs["video_id"], "abc123xyz89")
         self.assertFalse(mocked_run.call_args.kwargs["full_reprocess"])
+
+    def test_cli_content_run_triggers_auto_sync_for_target_date(self) -> None:
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}):
+            with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0) as mocked_sync:
+                with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21"]):
+                    exit_code = cli_module.main()
+        self.assertEqual(exit_code, 0)
+        mocked_sync.assert_called_once_with("2026-03-21")
+
+    def test_cli_sync_failure_returns_nonzero(self) -> None:
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}):
+            with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=1) as mocked_sync:
+                with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21"]):
+                    exit_code = cli_module.main()
+        self.assertEqual(exit_code, 1)
+        mocked_sync.assert_called_once()
+
+    def test_cli_non_content_mode_skips_auto_sync(self) -> None:
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}):
+            with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0) as mocked_sync:
+                with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--bootstrap-login"]):
+                    exit_code = cli_module.main()
+        self.assertEqual(exit_code, 0)
+        mocked_sync.assert_not_called()
 
 
 def json_text(payload: dict) -> str:
