@@ -4,6 +4,7 @@
 
 {% block content %}
   <nav class="breadcrumbs"><a href="/">日期</a> / {{ day.day_date }}</nav>
+  <a class="return-pill" href="/">← 返回日期列表</a>
   <section class="page-heading">
     <h1>{{ day.day_date }}</h1>
     <p>当天同步完成的视频与概要。</p>
@@ -21,7 +22,7 @@
       {% for video in videos %}
         <article class="video-row">
           <div class="row-main">
-            <a class="row-title" href="/videos/{{ video.video_id }}">{{ video.title }}</a>
+            <a class="row-title" href="/videos/{{ video.video_id }}?day={{ day.day_date }}">{{ video.title }}</a>
             <p>{{ video.channel_name or "未知频道" }}</p>
           </div>
           <div class="video-meta">

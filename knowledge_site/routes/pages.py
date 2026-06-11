@@ -132,7 +132,7 @@ def day_detail(day_date: str, request: Request) -> HTMLResponse:
 
 
 @router.get("/videos/{video_id}", response_class=HTMLResponse)
-def video_detail(video_id: str, request: Request) -> HTMLResponse:
+def video_detail(video_id: str, request: Request, day: str | None = None) -> HTMLResponse:
     redirect = _require_login(request)
     if redirect:
         return redirect
@@ -153,6 +153,7 @@ def video_detail(video_id: str, request: Request) -> HTMLResponse:
         ).fetchone()
         if video is None:
             raise HTTPException(status_code=404, detail="Video not found")
+        return_day = _resolve_video_day(conn, video_id, day)
     finally:
         conn.close()
 
@@ -164,6 +165,7 @@ def video_detail(video_id: str, request: Request) -> HTMLResponse:
         name="video.html",
         context={
             "video": video_dict,
+            "return_day": return_day,
             "blocks": split_markdown_blocks(video["summary_markdown"]),
         },
     )
@@ -180,6 +182,28 @@ def _excerpt(markdown: str, limit: int = 180) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "..."
+
+
+def _resolve_video_day(conn, video_id: str, day: str | None) -> str | None:
+    if day:
+        row = conn.execute(
+            "SELECT 1 FROM day_videos WHERE day_date = ? AND video_id = ?",
+            (day, video_id),
+        ).fetchone()
+        if row is not None:
+            return day
+
+    row = conn.execute(
+        """
+        SELECT day_date
+        FROM day_videos
+        WHERE video_id = ?
+        ORDER BY day_date DESC
+        LIMIT 1
+        """,
+        (video_id,),
+    ).fetchone()
+    return row["day_date"] if row is not None else None
 
 
 def _asset_url(settings, value: str | None) -> str | None:

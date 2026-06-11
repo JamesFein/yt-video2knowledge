@@ -3,7 +3,16 @@
 {% block title %}{{ video.title }} - Knowledge Site{% endblock %}
 
 {% block content %}
-  <nav class="breadcrumbs"><a href="/">日期</a> / <span>{{ video.title }}</span></nav>
+  <nav class="breadcrumbs">
+    <a href="/">日期</a>
+    {% if return_day %}
+      / <a href="/days/{{ return_day }}">{{ return_day }}</a>
+    {% endif %}
+    / <span>{{ video.title }}</span>
+  </nav>
+  {% if return_day %}
+    <a class="return-pill" href="/days/{{ return_day }}">← 返回视频列表</a>
+  {% endif %}
 
   <section class="video-heading">
     {% if video.thumbnail_url %}

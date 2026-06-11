@@ -113,8 +113,15 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertIn('<details class="daily-overview">', day_page.text)
             self.assertIn("<summary>knowledge Daily Overview</summary>", day_page.text)
             self.assertNotIn('<details class="daily-overview" open', day_page.text)
+            self.assertIn('<a class="return-pill" href="/">← 返回日期列表</a>', day_page.text)
+            self.assertIn('href="/videos/ready?day=2026-06-01"', day_page.text)
             video_page = client.get("/videos/ready")
             self.assertIn("Ready Video", video_page.text)
+            self.assertIn('<a href="/days/2026-06-01">2026-06-01</a>', video_page.text)
+            self.assertIn(
+                '<a class="return-pill" href="/days/2026-06-01">← 返回视频列表</a>',
+                video_page.text,
+            )
             self.assertIn('aria-label="一句话总结 / 可执行启发"', video_page.text)
             self.assertIn('class="block-heading-context"', video_page.text)
             self.assertIn('<span class="block-heading-context">一句话总结</span>', video_page.text)
@@ -125,6 +132,17 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertNotIn("<pre>可执行启发", video_page.text)
             self.assertNotIn('<textarea class="block-text" hidden>可执行启发', video_page.text)
             self.assertNotIn("直接内容", video_page.text)
+            video_page_from_day = client.get("/videos/ready?day=2026-06-01")
+            self.assertIn(
+                '<a class="return-pill" href="/days/2026-06-01">← 返回视频列表</a>',
+                video_page_from_day.text,
+            )
+            video_page_bad_day = client.get("/videos/ready?day=2026-06-02")
+            self.assertIn(
+                '<a class="return-pill" href="/days/2026-06-01">← 返回视频列表</a>',
+                video_page_bad_day.text,
+            )
+            self.assertNotIn('href="/days/2026-06-02"', video_page_bad_day.text)
 
             response = client.get("/api/v1/videos/ready/meta-summary")
             self.assertEqual(response.status_code, 200)
