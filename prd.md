@@ -1,212 +1,156 @@
-# Knowledge Site 自动同步 PRD
+# OpenClaw Knowledge Digest 稳定性改进方案
 
-## 问题陈述（Problem Statement）
+## 解决方案
 
-用户已经完成了 2026-06-07 的 YouTube knowledge digest 运行，目标日期的 run 目录中已经生成了 daily overview、manifest、22 个 ready 视频摘要、metadata、transcript 和 thumbnail 产物。但 Knowledge Site 使用的 SQLite 读模型仍只同步到 2026-06-06，导致站点首页和日期详情页看不到 2026-06-07 的内容。
+保持现有 `launchd + 本地 queue worker` 架构，不引入 Celery。当前 workflow 是单机、本地优先、每天一次的 digest 任务，问题可以通过增强现有 worker 的重试、状态和锁处理解决，不需要引入分布式队列系统。
 
-从用户视角看，digest 跑完应该意味着 Knowledge Site 也已经展示最新日期的数据。现在「处理完成」和「站点可见」之间存在手动同步步骤，而且同步缺失没有被纳入运行结果，容易造成静默的数据滞后。
+为摘要生成增加有限自动重试。单个视频总结失败后，只重试该视频的总结步骤，不重新抓取整天视频、不重跑已成功的视频。重试使用退避间隔，例如：
 
-## 解决方案（Solution）
-
-在 digest 成功写完目标日期产物后，自动触发 Knowledge Site 的目标日期同步。同步应只刷新本次目标日期，把 `data/runs/YYYY-MM-DD` 作为源数据，把 SQLite 作为可重建的站点读模型，并复制必要的 transcript 和 thumbnail asset。
-
-如果 digest 本身失败，不触发同步。如果 digest 成功但 Knowledge Site 同步失败，本次 CLI 应返回失败状态，并在输出中明确说明同步失败原因、目标日期、数据库路径和后续可重试方式。这样用户不会误以为「视频已跑完」就等同于「站点已更新」。
-
-## 用户故事（User Stories）
-
-1. 作为 knowledge digest 操作者，我希望在某个日期成功运行后 Knowledge Site 自动更新，这样我不必记住一条单独的同步命令。
-2. 作为 Knowledge Site 读者，我希望最新处理完成的日期出现在站点首页，这样我可以立即阅读最新的每日知识摘要。
-3. 作为操作者，我希望目标日期页面包含所有成功生成摘要的视频，这样站点能反映完整的运行产出。
-4. 作为操作者，我希望 pending（待生成摘要）的视频被排除在公开视频列表之外，这样未完成的内容不会被当成成品展示。
-5. 作为操作者，我希望 transcript 失败的视频被排除在公开视频列表之外，这样失败的处理不会产生破损的站点条目。
-6. 作为操作者，我希望即使同一天的其他视频处于 pending 或 failed，ready 视频也能被导入，这样部分失败不会阻塞有用的已完成内容。
-7. 作为读者，我希望每个导入的视频展示其最新的摘要 markdown，这样重跑和摘要修订能在站点上体现。
-8. 作为读者，我希望同步后 transcript 和 thumbnail asset 可用，这样视频页面保持有用且视觉完整。
-9. 作为读者，我希望同一天内视频保持稳定排序，这样每日页面在多次访问之间是可预测的。
-10. 作为 meta-summary 编辑者，我希望手写的 meta summary 在重复同步后依然保留，这样运维同步永远不会覆盖用户撰写的笔记。
-11. 作为操作者，我希望对同一日期重跑同步是幂等的，这样不会产生重复行或残留的 date-video 关联。
-12. 作为操作者，我希望同步失败会让整条命令失败，这样自动化不会在站点仍然陈旧时静默报告成功。
-13. 作为操作者，我希望每次运行后有清晰的同步报告，这样我能看到目标日期的导入、pending、failed 计数。
-14. 作为操作者，我希望能对指定日期手动重跑同步，这样我能在不重跑视频处理的前提下从短暂的数据库或文件系统问题中恢复。
-15. 作为操作者，我希望保留全量同步模式，这样在需要时能从历史 run 目录重建站点读模型。
-16. 作为维护者，我希望 SQLite 写入是事务性的，这样畸形的源数据不会让站点停留在半更新状态。
-17. 作为维护者，我希望 SQLite 锁竞争被优雅处理，这样运行中的 web app 和同步命令能共存。
-18. 作为维护者，我希望 asset 复制避免半成品文件，这样被中断的同步不会留下损坏的 transcript 或 thumbnail。
-19. 作为维护者，我希望同步使用与 web app 相同的数据库和 asset 配置，这样本地和部署视图不会漂移。
-20. 作为维护者，我希望同步运行可审计，这样我能检查每个日期何时被导入、跳过了多少视频。
-21. 作为未来的 agent，我希望 PRD 定义模块边界和数据更新规则，这样实现可以不必重新发现产品意图。
-22. 作为未来的 agent，我希望 PRD 记录边缘情况，这样实现能有意识地处理常见失败模式。
-
-## 实现决策（Implementation Decisions）
-
-- digest workflow 仍然是已产出内容的事实来源（source of truth）。Knowledge Site 的 SQLite 数据库是一个可以从 run 目录重建的读模型。
-- 自动同步只应在 digest workflow 成功写完目标日期的 daily overview 和 manifest 之后发生。
-- 自动同步应适用于普通的日期运行、pending-summary 重试，以及更新某个目标日期 run 目录的单视频重跑。
-- 自动同步不应适用于认证、登录引导、profile 播种，或其他不产生目标日期内容运行的模式。
-- 同步接口应接受一个可选的目标日期。提供目标日期时只同步该日期；省略时保留现有的全量历史同步行为，用于恢复和重建。
-- 同步 CLI 应在保留当前全量同步默认行为的同时，暴露目标日期同步能力。
-- 同步输出应包含目标日期、数据库路径、导入视频数、pending 数、failed 数，以及本次是自动还是手动。
-- digest 命令在 digest 生成成功后若自动同步失败，应返回非零退出码。
-- 同步应在每个目标日期一个 SQLite 事务内运行，使 `days`、`videos`、`day_videos`、`video_meta_summaries`、`sync_runs` 保持一致。
-- `days` 应按日期 upsert，写入最新的 daily overview markdown 和同步时间戳。
-- `videos` 应按 video ID upsert，写入 title、channel、URL、duration、upload date、摘要 markdown、transcript asset 路径、thumbnail asset 路径和更新时间戳。
-- `day_videos` 应在每次同步时按目标日期重建，使被移除、重排或新就绪的视频被准确反映。
-- `video_meta_summaries` 应仅在缺失时插入。已有内容绝不能被同步覆盖。
-- `sync_runs` 应为每次成功的日期同步追加一条审计行，包含导入、pending、failed 计数。
-- ready 视频由 `processing_status = summary_ready` 且存在预期的摘要 markdown 文件共同决定。
-- pending 视频和缺摘要的 ready 记录不应导入视频列表；它们在审计中计为 pending。
-- transcript 失败的视频不应导入视频列表；它们在审计中计为 failed。
-- 缺失的 transcript 或 thumbnail asset 不应阻塞视频导入。对应的 asset 路径应保持为空。
-- 畸形的 manifest 或 metadata JSON 应使该目标日期同步失败，并回滚该日期的 SQLite 变更。
-- SQLite 连接应被配置为能容忍来自运行中 web app 的正常读写竞争。
-- asset 复制应使用安全写入策略，避免在中断后留下半成品目标文件。
-- 除非锁处理或审计正确性需要，否则实现应避免 schema 变更。现有表已经表达了所需的领域模型。
-- 当前 2026-06-07 的缺口应在该机制存在后，通过运行目标日期同步来修复，而不重跑视频处理。
-- 将本 PRD 发布到 issue tracker 被有意推迟，因为本上下文中没有仓库 issue tracker 配置和分诊标签词表。
-
-## 数据流（Data Flow）
-
-源数据布局（每个 run 目录）：
-
-```
-data/runs/2026-06-07/
-├── daily-overview.zh-CN.md          # days.daily_summary_markdown 的来源
-├── manifest.json                    # processed_videos / pending_summary_videos / failed_videos 等
-└── videos/<video_id>/
-    ├── metadata.json                # 与 manifest 记录合并，metadata 优先
-    ├── summary.zh-CN.md             # videos.summary_markdown 的来源；缺失 → 计为 pending
-    ├── transcript.original.txt      # 复制到 assets_dir/transcripts/<id>.txt
-    └── thumbnail.webp|jpg|jpeg|png  # 复制到 assets_dir/thumbnails/<id>.<ext>
+```text
+第 1 次失败 -> 等 30 秒后重试
+第 2 次失败 -> 等 2 分钟后重试
+第 3 次失败 -> 等 5 分钟后重试
+仍失败 -> 标记为 pending_summary，交给整日补跑机制
 ```
 
-端到端流程（单个目标日期）：
+整日任务结束后，如果 manifest 中仍有 `pending_summary`，worker 自动触发一次只针对 pending 视频的补跑，相当于运行 `--retry-summaries`。如果补跑仍未清零，则后续按更长间隔继续补跑，例如 10 分钟、1 小时、下一次 daily worker tick。
 
-```
-digest 成功写完目标日期产物
-        │
-        ▼
-自动同步（仅目标日期）── 失败 ──► CLI 返回非零，打印目标日期 + db_path + 重试命令
-        │ 成功
-        ▼
-打开 1 个 SQLite 事务（per 目标日期）
-   1. 读 manifest.json → 构建 records 索引（processed_videos / failed_videos）
-   2. 读 daily-overview.zh-CN.md → upsert days 行
-   3. DELETE FROM day_videos WHERE day_date = 目标日期   # 重建排序，清掉残链
-   4. 按 videos/ 子目录名排序遍历，逐个判定状态：
-        pending_summary          → 计入 pending，跳过
-        transcript_failed        → 计入 failed，跳过
-        summary_ready 但缺 summary.zh-CN.md → 计入 pending，跳过
-        summary_ready 且有 summary → 导入：
-            - 复制 transcript / thumbnail asset（缺失则路径留空）
-            - upsert videos 行
-            - INSERT OR IGNORE video_meta_summaries（保护用户笔记）
-            - upsert day_videos(day_date, video_id, position)
-   5. INSERT sync_runs 审计行（imported / pending / failed 计数）
-        │
-        ▼
-提交事务 → web app 下次读到的就是该日期的完整读模型
+自动重试必须有停止条件，避免无限消耗 API 和让任务永远处于未完成状态。建议停止条件为：
+
+```text
+同一个视频总结最多尝试 5 次
+或超过 24 小时仍未成功
+或错误明显不是临时问题，例如凭据失效、配置错误、参数错误
 ```
 
-关键不变量（invariants）：
+达到停止条件后，不再自动重试该视频，保留可诊断状态，并将其标记为 `needs_review` 或继续保留为带错误原因的 `pending_summary`。
 
-- **源是真相，DB 可重建**：任意时刻删库后从 `data/runs/` 全量同步应得到等价读模型（用户笔记除外，见下）。
-- **目标日期隔离**：目标日期同步只触碰该 `day_date` 的行，其他日期不受影响。
-- **顺序由目录名决定**：`position` 来自 `videos/` 子目录排序，保证页面排序稳定且可预测。
+worker 收到 SIGTERM/SIGINT 时执行中断保护。中断保护的目标是避免出现“进程已经死了，但状态还显示 running，锁还留着”的假运行状态。worker 被中断时应执行以下收尾：
 
-## 表的变化（Table Changes）
+```text
+1. 记录当前任务被 interrupted
+2. 将状态从 running 改为 idle / interrupted
+3. 释放 worker lock
+4. 保留未完成请求，不把它当作成功处理
+5. 下一次 worker 启动时继续处理该请求
+```
 
-本节分两部分：A. 现有 schema 下每次同步引发的**行级数据变化**（不改 DDL，与现有代码一致）；B. 可选的 **schema 增强建议**（默认不采纳，除非锁处理/审计需要）。
+lock 中写入 `pid`、`started_at` 和 `heartbeat`。`show_status.py` 查询状态时应检查 lock 里的进程是否仍然存活，以及 heartbeat 是否过期。如果进程不存在或 heartbeat 长时间未更新，应报告 stale lock，并允许 worker 安全恢复，不再只根据 lock 文件存在就认为任务仍在运行。
 
-### A. 每次目标日期同步的行级变化
+OpenClaw 只负责入队和查看状态，不直接强制重启正在执行的 worker。禁止用 `launchctl kickstart -k` 强制重启执行中的 worker，因为 `-k` 会先杀掉旧进程，容易打断正在运行的 digest。正确操作是：
 
-现有 5 张表（见 `knowledge_site/database.py`，`SCHEMA_VERSION = 1`），同步对每张表的写法：
+```text
+1. 使用 queue_request.py 入队目标日期
+2. 使用 show_status.py 查看状态
+3. 等待 launchd 的 5 分钟 tick 接单
+4. 如需排障，先确认 worker 未在运行，再做重启操作
+```
 
-| 表 | 操作 | 键 | 语义 | 幂等性 |
-|----|------|----|------|--------|
-| `days` | UPSERT | `day_date` (PK) | 写入最新 daily overview 与 `synced_at` | 是，重跑覆盖同一行 |
-| `videos` | UPSERT | `video_id` (PK) | 全量字段刷新（title/channel/url/duration/upload_date/summary/asset 路径/`updated_at`） | 是，重跑覆盖同一行 |
-| `day_videos` | DELETE 整段 + 重新 INSERT | `(day_date, video_id)` (PK) | 先 `DELETE WHERE day_date=?` 再按新顺序插入，反映移除/重排/新就绪 | 是，重建即幂等 |
-| `video_meta_summaries` | INSERT OR IGNORE | `video_id` (PK) | 仅在缺失时建空行；**已有内容永不覆盖** | 是，且保护用户撰写内容 |
-| `sync_runs` | INSERT（追加） | `id` AUTOINCREMENT | 每次成功同步追加一条审计行 | **否（有意为之）**：每次运行都新增一行，形成历史 |
+成功标准改为以 manifest 结果为准，而不是只看进程 exit code。一次目标日期处理只有在满足以下条件时才算完成：
 
-要点：
+```text
+failed_count = 0
+pending_summary_count = 0
+```
 
-- 同一目标日期重跑同步是幂等的（`days`/`videos`/`day_videos` 收敛到同一状态），唯一单调增长的是 `sync_runs` 审计历史——这是设计意图，用于审计「何时同步、跳过多少」。
-- `day_videos` 采用「先删后建」而非纯 upsert，是为了让**从源中消失的视频**（例如某视频从 ready 退回 pending，或被移出当天）能从当天列表中正确移除——纯 upsert 做不到删除。
-- `video_meta_summaries` 是唯一对同步「只读保护」的表：同步只会 `INSERT OR IGNORE` 占位空行，用户后续手写的 `content` 在任何重同步中都保留。
+如果进程 exit code 为 0，但 manifest 里仍有 `pending_summary`，这次运行只能算“部分成功，需要补跑”，不能向用户报告为完全成功。
 
-### B. 可选的 Schema 增强建议（默认不采纳）
+## 测试方案
 
-以下变更**不属于本次范围**，仅在「锁处理或审计正确性」确有需要时引入，并且要走迁移 + `SCHEMA_VERSION` 升级（`database.py` 已有版本校验，不匹配会抛 `SchemaVersionError`）。每条都附 UP/DOWN 思路：
+### 测试原则
 
-1. **`day_videos(day_date)` 索引** — 当前 `day_videos` 的 PK 是 `(day_date, video_id)`，按 `day_date` 前缀查询已可用复合主键，**无需额外索引**。仅当出现按 `video_id` 单独查询的热点时，才考虑 `CREATE INDEX idx_day_videos_video ON day_videos(video_id)`。
-2. **`sync_runs.mode` 字段** — 区分本次是自动（auto）还是手动（manual）。审计需求若要可查询，可加 `mode TEXT NOT NULL DEFAULT 'auto'`。
-   - UP：`ALTER TABLE sync_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';`
-   - DOWN：SQLite 不支持 DROP COLUMN（旧版本），需重建表回退。
-   - 注意：用 `DEFAULT 'auto'` 保证旧行可读，符合「加 NOT NULL 必带默认值」原则。
-3. **`sync_runs.status` 字段** — 当前只在成功路径写审计行；若希望失败也留痕（便于「同步失败可重试」排查），可加 `status TEXT NOT NULL DEFAULT 'success'`，并在回滚前写一条 `failed` 行（需放在事务外或独立连接，避免被回滚）。
-   - 这是真正需要权衡的点：审计行如果在同一事务里，回滚会连审计一起回滚；要留失败痕迹必须用独立写入路径。
-4. **`days.video_count` 去规范化列** — 若首页需要展示每日视频数且 JOIN `day_videos` 成为读热点，可加缓存列。但这违反「源是真相」的简洁性，**不建议**，除非有实测性能问题。
+测试沿用本仓库当前风格：使用 `unittest`、`unittest.mock`、`tempfile` 和临时文件树组织测试，不要求迁移到 pytest，也不引入 freezegun。每个测试按 Arrange / Act / Assert 思路描述和实现：先布置临时 run 目录、假 manifest、假状态文件、假 API 客户端或假进程，再执行目标行为，最后断言外部可见结果。
 
-结论：遵循现有「除非锁/审计必要否则不改 DDL」的决策，**默认只发生 A 节的行级变化，不引入 B 节**。B 节作为有意识的预案记录在此，避免未来重新发现。
+测试应验证外部行为，不断言私有实现细节。重点断言 manifest 计数、状态文件内容、锁是否存在、请求是否保留、重试次数、被处理的视频 ID、用户可看到的 status 输出，以及最终命令可通过项目现有测试入口运行。
 
-## 边缘情况与容错处理（Edge Cases & Fault Tolerance）
+测试必须隔离真实环境。测试不能访问真实 YouTube、OpenAI、launchd、`.openclaw` 生产目录或真实 worker 状态；不能真实 sleep；不能依赖当前时间自然流逝。所有网络、LLM/API、时间、进程、信号和文件系统路径都应通过假对象、mock、临时目录或可注入依赖控制。
 
-| 边缘情况 | 检测点 | 处理策略 | 对计数/状态的影响 |
-|----------|--------|----------|--------------------|
-| digest 失败 | CLI 调用前 | 不触发同步 | 站点保持原状，不产生 sync_run |
-| digest 成功但同步失败 | 同步异常向上抛出 | 事务回滚；CLI 返回非零，打印目标日期 + `db_path` + 重试命令 | 该日期无任何 DB 变更落地 |
-| `manifest.json` 缺失 | `_load_json` 返回 `{}` | 视为无 manifest 记录；仍可凭 `videos/` 下 metadata 导入 | 仅凭 metadata 判定状态 |
-| `manifest.json` 畸形 JSON | `json.loads` 抛异常 | 异常冒泡 → 事务回滚 → 该日期同步失败 | 该日期回滚，不留半更新 |
-| `metadata.json` 畸形 JSON | `json.loads` 抛异常 | 同上，该日期回滚 | 该日期回滚 |
-| `daily-overview.zh-CN.md` 缺失 | `_read_text` 返回 `""` | `days.daily_summary_markdown` 写空串（列为 NOT NULL，空串合法） | days 行仍 upsert |
-| `summary.zh-CN.md` 缺失（但状态 ready） | `summary_path.exists()` 为假 | 跳过导入，计入 pending | imported 不增，pending +1 |
-| 视频状态 `pending_summary` | manifest/metadata 状态 | 跳过，不进视频列表 | pending +1 |
-| 视频状态 `transcript_failed` | 状态或 `failure_stage` | 跳过，不进视频列表 | failed +1 |
-| 状态既非 ready/pending/failed | `status != READY_STATUS` | 静默跳过（既不导入也不计 pending/failed） | 不计数（潜在盲区，见下注） |
-| transcript asset 缺失 | `source.exists()` 为假 | `transcript_path` 留空，不阻塞导入 | 仍 imported +1 |
-| thumbnail asset 缺失（所有扩展名都没有） | 遍历 `THUMBNAIL_EXTENSIONS` 未命中 | `thumbnail_path` 留空，不阻塞导入 | 仍 imported +1 |
-| asset 复制中断 | 复制使用安全写入策略 | 避免留下半成品目标文件（不产生损坏 asset） | 不影响 DB 一致性 |
-| 同一日期重复同步 | `day_videos` 先删后建 + 各表 upsert | 幂等收敛，无重复行、无残留链 | `sync_runs` 仍追加审计行 |
-| 视频从 ready 退回 pending（重跑后） | `day_videos` 整段重建 | 该视频从当天列表移除 | 下次 imported 反映减少 |
-| 用户手写 meta summary | `INSERT OR IGNORE` | 已有内容永不覆盖 | `content` 保留 |
-| SQLite 被 web app 占用（锁竞争） | 连接配置容忍正常读写竞争 | 优雅处理，避免与运行中 web app 冲突 | 同步与 web app 共存 |
-| 目标日期 run 目录不存在 | `_iter_day_dirs` 不含该日期 | 该日期不产生任何变更 | 无 sync_run |
-| run 目录名非 `YYYY-MM-DD` | `re.fullmatch` 过滤 | 忽略该目录 | 不参与同步 |
+测试数据要小而明确。默认使用 1 到 3 个视频验证单个行为；只有回归场景使用 27 个视频和 2 个 pending 的结构，以贴近 2026-06-09 的实际事故形态。
 
-**注（潜在盲区）**：当前实现中「状态既非 ready 也非 pending/failed」的视频会被静默跳过且不计入任何审计计数（`sync.py:110-111`）。这意味着 `imported + pending + failed` 不一定等于目录中视频总数。实现/测试时应留意：要么把未知状态归入某一计数桶，要么在报告中显式标注「未分类」数量，以免审计出现「凭空消失」的视频。
+### 测试范围与组织
 
-## 测试决策（Testing Decisions）
+摘要重试策略测试放在现有 digest 相关测试附近，优先复用 `tests/test_knowledge_digest.py` 的风格，使用临时目录和 mock 客户端验证“只重试失败视频”和“达到上限后停止”。
 
-- 测试应验证外部行为：数据库行、被保留的 meta summary、CLI 退出码、同步报告。测试应避免断言私有 helper 的实现细节。
-- 现有 Knowledge Site 同步测试是导入行为、asset 复制、重复视频、重同步行为、meta-summary 保留的主要先例（`tests/test_knowledge_site_sync.py`）。
-- 为目标日期同步增加测试：验证定向同步只更新请求的日期，其他日期保持不变。
-- 为 ready/pending/failed/缺摘要混合记录增加测试：验证导入、pending、failed 计数。
-- 为重复目标日期同步增加测试：验证幂等性和用户撰写 meta summary 内容的保留。
-- 为畸形 JSON 或不可读源数据增加测试：验证事务回滚和非成功报告。
-- 为缺失 transcript 和 thumbnail asset 增加测试：验证 ready 视频仍以空 asset 路径导入。
-- 增加 CLI 级测试：验证手动目标日期同步报告正确的计数。
-- 增加 CLI 级测试：验证 digest 成功后同步失败返回非零状态。
-- 增加 CLI 级测试：验证非内容模式不会尝试自动站点同步。
-- 手动验证应在同步 2026-06-07 后查询 SQLite，确认该日期有 1 条 `days` 行和 22 条 `day_videos` 行。
-- 手动验证应加载运行中的 Knowledge Site，确认 2026-06-07 作为最新日期出现在首页。
+worker、lock、status 的测试应覆盖 queue worker 的核心行为。如果 worker 仍位于 `.openclaw` 外部，先将可测试的核心逻辑抽成可导入模块，或在 automation 代码旁建立同风格测试；不要让测试直接读写真实 `.openclaw/workspace/automation/knowledge-digest/state`。
 
-## 范围之外（Out of Scope）
+Knowledge Site API 和 template 测试不是本 PRD 的重点，除非实现改动影响 digest 完成后同步到站点的可见结果。否则现有 `tests/test_knowledge_site_api.py` 和 template 相关测试不需要扩展。
 
-- 对历史视频重新处理、重新转写或重新生成摘要。
-- 改变 Knowledge Site 的视觉设计或页面导航。
-- 用其他数据库替换 SQLite。
-- 增加后台调度器、守护进程、webhook 或文件监听器。
-- 在未确认 issue tracker 配置的情况下将本 PRD 发布到 issue tracker。
-- 为 Knowledge Site 构建新的部署流水线。
-- 把 VTT 字幕文件导入 SQLite。
-- 在存在规范摘要 markdown 时导入遗留的重复报告文件。
-- 覆盖或重新生成用户撰写的 meta summary。
-- 让 failed 或 pending 视频以正常完成视频的形式可见。
-- 增加超出同步机制所需的新公开 API。
+### 单元测试场景
 
-## 补充说明（Further Notes）
+临时 LLM/API 错误会重试并最终成功。使用假 summary client 让同一个视频前几次返回 `IncompleteRead`、空响应或 bad response，最后一次返回成功结果；断言调用次数等于失败次数加最终成功次数，最终状态为 `summary_ready`，错误字段被清空。
 
-当前观察到的缺口是具体的：2026-06-07 的 run 目录存在并包含 22 个 summary-ready 视频，而 Knowledge Site 数据库只有到 2026-06-06 的日期。本 PRD 将其视为一次**同步契约失败**，而非内容生成失败。
+临时错误达到最大尝试次数后停止。让假 summary client 持续返回同一种可重试错误；断言系统在最大次数后停止，不再继续调用，视频仍保留为 `pending_summary` 或转为 `needs_review`，并记录最后错误原因、尝试次数和最后失败时间。
 
-期望的长期契约很简单：某个日期的一次成功 digest 运行，应当让对应的 Knowledge Site 读模型对同一日期保持最新。如果做不到，命令应当让失败可见、可重试。
+超过 24 小时窗口后停止自动重试。使用可控时钟布置第一次失败时间和当前时间；断言超过窗口后不会继续自动补跑，并保留可诊断状态。
+
+不可重试错误不会进入退避重试。模拟凭据失效、配置错误或参数错误；断言只尝试一次，立即停止，并把错误标记为需要人工处理。
+
+退避策略不真实等待。测试只验证下一次重试应被安排到正确的间隔，或验证 sleep/clock 被假对象接管；测试运行时不应因为 30 秒、2 分钟、5 分钟策略而变慢。
+
+成功视频不被重复处理。布置 manifest 中同时包含 `summary_ready`、`pending_summary` 和新视频；执行补跑选择逻辑后，断言只有 pending 或需要重试的视频进入处理列表，已成功视频被跳过。
+
+exit code 0 但仍有 pending 时不算完全成功。布置一个返回成功退出码但 manifest 中 `pending_summary_count` 大于 0 的结果；断言 worker 或状态汇总把它标记为 partial / needs retry，而不是最终 success。
+
+### 集成测试场景
+
+整日任务结束后自动补跑 pending summary。布置一个目标日期 run 目录，首次 manifest 中有部分视频 `summary_ready`、部分视频 `pending_summary`；执行 worker 的日任务完成流程；断言系统触发等价于 `--retry-summaries` 的补跑路径，并且只处理 pending 视频。
+
+补跑成功后 manifest 计数清零。首次运行产生 pending，补跑返回成功摘要；断言最终 manifest 中 `failed_count = 0`、`pending_summary_count = 0`、所有目标视频为 `summary_ready`，并且状态记录为完成。
+
+补跑仍失败后保留可诊断状态。让补跑继续遇到可重试错误直到达到上限；断言状态文件包含 target date、失败视频 ID、最后错误、尝试次数、最后失败时间和下一步人工处理信号。
+
+worker 收到 SIGTERM/SIGINT 时执行中断保护。布置正在运行的 current job、request 文件和 lock；模拟终止信号；断言状态从 `running` 变为 `interrupted` 或 `idle`，lock 被释放，请求没有被归档为成功，也没有被删除。
+
+中断后下一次 worker 能继续。沿用上一个中断后的状态再次启动 worker；断言它能重新识别未完成请求并继续处理，而不是因为残留状态跳过任务。
+
+worker 不会释放别人的活锁。布置 lock 中 PID 仍存活且 heartbeat 未过期；启动第二个 worker；断言第二个 worker 不接管、不删除 lock、不修改 current job。
+
+stale lock 会被识别并恢复。布置 lock 存在但 PID 不存在，或 heartbeat 已过期；执行 status 查询或 worker 启动逻辑；断言输出明确报告 stale lock，worker 可以安全清理并恢复接单。
+
+status 输出能区分 running、interrupted、partial、success 和 stale lock。分别布置这些状态文件和 lock 组合；断言 `show_status.py` 的用户可见输出能让操作者判断下一步是等待、补跑、清理还是人工处理。
+
+### 回归测试场景
+
+复现 2026-06-09 的部分失败。布置 27 个视频，其中 25 个 `summary_ready`，2 个 `pending_summary`，错误分别模拟网络读断和 API bad response；执行补跑流程；断言只补跑这 2 个视频，最终 `failed_count = 0` 且 `pending_summary_count = 0`。
+
+复现 2026-06-10 的 worker 启动后被中断。布置一个 request 任务刚开始写入日志和 running 状态、尚未写出 manifest 和 exit code；模拟 worker 被 SIGTERM 打断；断言不会留下假 running，lock 被释放，请求保留，下次 worker 可以继续。
+
+复现“进程退出码成功但业务未完成”。布置 exit code 0 且 manifest 中仍有 pending summary；断言系统不会向用户报告完全成功，而是进入补跑或 partial 状态。
+
+### 测试数据与替身
+
+使用临时目录构造 `data/runs/YYYY-MM-DD`、`manifest.json`、视频子目录、状态文件、request 文件和 lock 文件。测试结束后由临时目录自动清理，不污染仓库和真实 OpenClaw 工作区。
+
+使用假 LLM/API 客户端控制返回序列：先失败后成功、一直失败、不可重试失败。测试只验证调用次数和最终状态，不触碰真实 API。
+
+使用假 clock 控制 `started_at`、`heartbeat`、最后失败时间和 24 小时窗口，避免依赖真实时间。
+
+使用假 process runner 控制 digest 命令的返回码、输出 manifest、运行中断和 signal 行为，避免启动真实长任务。
+
+使用小型 manifest fixture 覆盖 `summary_ready`、`pending_summary`、`failed`、`needs_review`、缺少 summary 文件、缺少 transcript 等常见组合。
+
+### 验收标准
+
+同一天最终成功只以 manifest 中 `failed_count = 0` 且 `pending_summary_count = 0` 为准。
+
+LLM/API 临时错误会被有限重试；达到次数、时间窗口或不可重试错误条件后会停止。
+
+补跑只处理失败或 pending 的视频，不重复处理已成功视频。
+
+worker 被中断后不会留下脏锁、假 running 或被误删的请求。
+
+stale lock 能被识别，活锁不会被误清理。
+
+状态输出能让操作者区分等待、补跑、人工处理和异常恢复。
+
+所有新增或调整的测试都能通过项目现有命令 `uv run python3 -m unittest discover -s tests` 运行。
+
+## 假设
+
+这是单机、本地优先、每天一次的 digest workflow。
+
+当前不需要多 worker、多机器、复杂任务优先级或分布式队列。
+
+LLM/API 的 `IncompleteRead`、空响应、bad response 等属于可重试临时错误。
+
+凭据失效、配置错误、参数错误等属于不可自动重试错误，应尽快停止并提示人工处理。
