@@ -15,6 +15,7 @@ from knowledge_digest import (  # noqa: E402
     ConfigurationError,
     DigestError,
     _json_default,
+    is_manifest_complete,
     parse_target_date,
     run_knowledge_digest,
 )
@@ -88,6 +89,12 @@ def main() -> int:
         sync_status = _auto_sync_knowledge_site(target_date.isoformat())
         if sync_status != 0:
             return sync_status
+        if not is_manifest_complete(manifest):
+            print(
+                "Digest finished partially; manifest still has failed or pending summaries.",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

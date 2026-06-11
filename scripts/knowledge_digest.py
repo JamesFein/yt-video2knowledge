@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,22 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 YOUTUBE_READONLY_SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
+SUMMARY_INLINE_ATTEMPTS = 4
+SUMMARY_MAX_ATTEMPTS = 5
+SUMMARY_RETRY_WINDOW = timedelta(hours=24)
+SUMMARY_RETRY_BACKOFF_SECONDS = (30, 120, 300)
+NON_RETRYABLE_SUMMARY_ERROR_MARKERS = (
+    "missing runtime configuration",
+    "invalid api key",
+    "incorrect api key",
+    "unauthorized",
+    "authentication",
+    "permission denied",
+    "invalid_request",
+    "invalid request",
+    "configuration",
+    "parameter",
+)
 DEVTOOLS_ACTIVE_PORT_CANDIDATES = [
     Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort",
     Path.home() / "Library/Application Support/Google/Chrome/Default/DevToolsActivePort",
@@ -1652,6 +1669,122 @@ def summarize_transcript(
     )
 
 
+def _parse_retry_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=BEIJING_TZ)
+    return parsed.astimezone(BEIJING_TZ)
+
+
+def _summary_retry_delay(attempt_count: int) -> int:
+    if attempt_count <= 0:
+        return SUMMARY_RETRY_BACKOFF_SECONDS[0]
+    return SUMMARY_RETRY_BACKOFF_SECONDS[min(attempt_count - 1, len(SUMMARY_RETRY_BACKOFF_SECONDS) - 1)]
+
+
+def _is_non_retryable_summary_error(exc: Exception) -> bool:
+    if isinstance(exc, ConfigurationError):
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in NON_RETRYABLE_SUMMARY_ERROR_MARKERS)
+
+
+def summarize_transcript_with_retries(
+    transcript_text: str,
+    video_title: str,
+    settings: dict[str, str],
+    playlist_name: str,
+    *,
+    existing_retry: dict[str, Any] | None = None,
+    max_attempts: int = SUMMARY_MAX_ATTEMPTS,
+    run_attempt_limit: int = SUMMARY_INLINE_ATTEMPTS,
+    clock: Callable[[], datetime] = beijing_now,
+    sleep_fn: Callable[[int], None] = time.sleep,
+    summarize_fn: Callable[[str, str, dict[str, str], str], str] = summarize_transcript,
+) -> tuple[str | None, dict[str, Any]]:
+    retry_state = dict(existing_retry or {})
+    attempt_count = int(retry_state.get("attempt_count") or 0)
+    first_failed_at = _parse_retry_datetime(retry_state.get("first_failed_at"))
+    now = clock()
+
+    if attempt_count >= max_attempts:
+        retry_state.update(
+            {
+                "attempt_count": attempt_count,
+                "stopped_reason": "max_attempts",
+                "next_step": "manual_review",
+            }
+        )
+        return None, retry_state
+    if first_failed_at and now - first_failed_at > SUMMARY_RETRY_WINDOW:
+        retry_state.update(
+            {
+                "attempt_count": attempt_count,
+                "stopped_reason": "retry_window_exceeded",
+                "next_step": "manual_review",
+            }
+        )
+        return None, retry_state
+
+    attempts_this_run = min(max_attempts - attempt_count, run_attempt_limit)
+    for run_attempt_index in range(attempts_this_run):
+        if run_attempt_index > 0:
+            sleep_fn(_summary_retry_delay(attempt_count))
+        try:
+            summary_text = summarize_fn(transcript_text, video_title, settings, playlist_name)
+            attempt_count += 1
+            return summary_text, {
+                "attempt_count": attempt_count,
+                "last_success_at": clock().isoformat(),
+                "last_error": None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            attempt_count += 1
+            now = clock()
+            if first_failed_at is None:
+                first_failed_at = now
+            retry_state.update(
+                {
+                    "attempt_count": attempt_count,
+                    "first_failed_at": first_failed_at.isoformat(),
+                    "last_failure_at": now.isoformat(),
+                    "last_error": str(exc),
+                    "stopped_reason": None,
+                    "next_step": "retry_pending_summaries",
+                }
+            )
+
+            if _is_non_retryable_summary_error(exc):
+                retry_state["stopped_reason"] = "non_retryable_error"
+                retry_state["next_step"] = "manual_review"
+                retry_state.pop("next_retry_after", None)
+                break
+            if attempt_count >= max_attempts:
+                retry_state["stopped_reason"] = "max_attempts"
+                retry_state["next_step"] = "manual_review"
+                retry_state.pop("next_retry_after", None)
+                break
+            if first_failed_at and now - first_failed_at > SUMMARY_RETRY_WINDOW:
+                retry_state["stopped_reason"] = "retry_window_exceeded"
+                retry_state["next_step"] = "manual_review"
+                retry_state.pop("next_retry_after", None)
+                break
+            if run_attempt_index < attempts_this_run - 1:
+                retry_state["next_retry_after"] = (
+                    now + timedelta(seconds=_summary_retry_delay(attempt_count))
+                ).isoformat()
+                retry_state["next_step"] = "retry_after_backoff"
+            else:
+                retry_state.pop("next_retry_after", None)
+
+    return None, retry_state
+
+
 def summarize_daily_overview(
     target_date: date,
     processed_videos: list[dict[str, Any]],
@@ -1804,6 +1937,7 @@ def write_video_outputs(
         "processed_at": beijing_now().isoformat(),
         "processing_status": summary_status,
         "summary_error": summary_error,
+        "summary_retry": video.get("summary_retry", {}),
         "processing_metrics": video.get("processing_metrics", {}),
         "transcription_details": transcript.details,
         "transcript_diagnostics": video.get("transcript_diagnostics", {}),
@@ -1820,6 +1954,7 @@ def write_video_outputs(
         "transcript_language": transcript.language,
         "processing_status": summary_status,
         "summary_error": summary_error,
+        "summary_retry": video.get("summary_retry", {}),
         "processing_metrics": video.get("processing_metrics", {}),
         "transcription_details": transcript.details,
         "transcript_diagnostics": video.get("transcript_diagnostics", {}),
@@ -1862,6 +1997,14 @@ def _pending_summary_videos(processed_videos: list[dict[str, Any]]) -> list[dict
     return [item for item in processed_videos if item.get("processing_status") == "pending_summary"]
 
 
+def is_manifest_complete(manifest: dict[str, Any]) -> bool:
+    return int(manifest.get("failed_count") or 0) == 0 and int(manifest.get("pending_summary_count") or 0) == 0
+
+
+def manifest_completion_status(manifest: dict[str, Any]) -> str:
+    return "success" if is_manifest_complete(manifest) else "partial"
+
+
 def _build_manifest(
     target_date: date,
     config: DigestConfig,
@@ -1879,7 +2022,7 @@ def _build_manifest(
         for key in normalized_incremental_stats:
             value = incremental_stats.get(key, normalized_incremental_stats[key])
             normalized_incremental_stats[key] = int(value)
-    return {
+    manifest = {
         "target_date": target_date.isoformat(),
         "playlist_name": config.playlist_name,
         "playlist_url": config.playlist_url,
@@ -1899,6 +2042,9 @@ def _build_manifest(
         "failed_videos": failed_videos,
         "needs_review_videos": needs_review,
     }
+    manifest["completion_status"] = manifest_completion_status(manifest)
+    manifest["needs_retry"] = manifest["completion_status"] != "success"
+    return manifest
 
 
 def _build_daily_overview_text(
@@ -1981,15 +2127,22 @@ def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: s
         processing_metrics.setdefault("summary_seconds", 0.0)
         merged["processing_metrics"] = processing_metrics
 
+        previous_attempt_count = int((merged.get("summary_retry") or {}).get("attempt_count") or 0)
         summary_started = time.monotonic()
-        try:
-            summary_text = summarize_transcript(
-                transcript.text,
-                merged["title"],
-                settings,
-                config.playlist_name,
-            )
-            merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
+        summary_text, summary_retry = summarize_transcript_with_retries(
+            transcript.text,
+            merged["title"],
+            settings,
+            config.playlist_name,
+            existing_retry=merged.get("summary_retry") or {},
+            max_attempts=SUMMARY_MAX_ATTEMPTS,
+            run_attempt_limit=1,
+        )
+        merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
+        merged["summary_retry"] = summary_retry
+        if int(summary_retry.get("attempt_count") or 0) > previous_attempt_count:
+            retried_count += 1
+        if summary_text is not None:
             updated_processed.append(
                 write_video_outputs(
                     run_dir,
@@ -2000,9 +2153,7 @@ def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: s
                     summary_error=None,
                 )
             )
-            retried_count += 1
-        except Exception as exc:  # noqa: BLE001
-            merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
+        else:
             updated_processed.append(
                 write_video_outputs(
                     run_dir,
@@ -2010,7 +2161,7 @@ def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: s
                     transcript,
                     None,
                     summary_status="pending_summary",
-                    summary_error=str(exc),
+                    summary_error=summary_retry.get("last_error") or summary_retry.get("stopped_reason"),
                 )
             )
 
@@ -2163,14 +2314,18 @@ def run_knowledge_digest(
                 }
 
                 summary_started = time.monotonic()
-                try:
-                    summary_text = summarize_transcript(
-                        transcript.text,
-                        merged["title"],
-                        settings,
-                        config.playlist_name,
-                    )
-                    merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
+                summary_text, summary_retry = summarize_transcript_with_retries(
+                    transcript.text,
+                    merged["title"],
+                    settings,
+                    config.playlist_name,
+                    existing_retry=merged.get("summary_retry") or {},
+                    max_attempts=SUMMARY_MAX_ATTEMPTS,
+                    run_attempt_limit=SUMMARY_INLINE_ATTEMPTS,
+                )
+                merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
+                merged["summary_retry"] = summary_retry
+                if summary_text is not None:
                     processed_videos.append(
                         write_video_outputs(
                             run_dir,
@@ -2181,8 +2336,7 @@ def run_knowledge_digest(
                             summary_error=None,
                         )
                     )
-                except Exception as exc:  # noqa: BLE001
-                    merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
+                else:
                     processed_videos.append(
                         write_video_outputs(
                             run_dir,
@@ -2190,7 +2344,7 @@ def run_knowledge_digest(
                             transcript,
                             None,
                             summary_status="pending_summary",
-                            summary_error=str(exc),
+                            summary_error=summary_retry.get("last_error") or summary_retry.get("stopped_reason"),
                         )
                     )
             except Exception as exc:  # noqa: BLE001
@@ -2236,6 +2390,8 @@ def run_knowledge_digest(
         _write_json(run_dir / "manifest.json", manifest)
 
         save_state(update_state(state, target_date, processed_videos))
+        if not video_id and int(manifest.get("pending_summary_count") or 0) > 0:
+            manifest = retry_pending_summaries(config, target_date)
         return manifest
     finally:
         if yt_dlp_cookies_path is not None:

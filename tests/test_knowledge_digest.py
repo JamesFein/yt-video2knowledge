@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -24,12 +24,16 @@ from knowledge_digest import (
     filter_entries_for_date,
     load_config,
     merge_run_results,
+    is_manifest_complete,
+    manifest_completion_status,
     normalize_playlist_url,
     parse_added_date_text,
     parse_target_date,
     parse_vtt,
     plan_run_entries,
+    retry_pending_summaries,
     select_entries_for_processing,
+    summarize_transcript_with_retries,
 )
 
 
@@ -239,6 +243,210 @@ class MergeRunResultsTests(unittest.TestCase):
         self.assertNotIn("becomes-success", [item["id"] for item in merged_failed])
 
 
+class SummaryRetryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = datetime(2026, 6, 10, 12, 0, tzinfo=BEIJING_TZ)
+
+    def test_transient_summary_error_retries_and_clears_error_on_success(self) -> None:
+        calls = []
+        sleeps = []
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str) -> str:
+            calls.append(video_title)
+            if len(calls) < 3:
+                raise knowledge_digest_module.DigestError("OpenAI Responses API returned an empty response")
+            return "final summary"
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            clock=lambda: self.now,
+            sleep_fn=sleeps.append,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertEqual(summary, "final summary")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [30, 120])
+        self.assertEqual(retry_state["attempt_count"], 3)
+        self.assertIsNone(retry_state["last_error"])
+
+    def test_transient_summary_error_stops_at_max_attempts(self) -> None:
+        calls = []
+        sleeps = []
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str) -> str:
+            calls.append(video_title)
+            raise knowledge_digest_module.DigestError("IncompleteRead during summary")
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            max_attempts=3,
+            run_attempt_limit=3,
+            clock=lambda: self.now,
+            sleep_fn=sleeps.append,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertIsNone(summary)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [30, 120])
+        self.assertEqual(retry_state["attempt_count"], 3)
+        self.assertEqual(retry_state["stopped_reason"], "max_attempts")
+        self.assertEqual(retry_state["next_step"], "manual_review")
+        self.assertEqual(retry_state["last_error"], "IncompleteRead during summary")
+
+    def test_non_retryable_summary_error_stops_immediately(self) -> None:
+        calls = []
+        sleeps = []
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str) -> str:
+            calls.append(video_title)
+            raise knowledge_digest_module.ConfigurationError("Missing runtime configuration: OPENAI_API_KEY")
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            clock=lambda: self.now,
+            sleep_fn=sleeps.append,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertIsNone(summary)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+        self.assertEqual(retry_state["stopped_reason"], "non_retryable_error")
+        self.assertEqual(retry_state["next_step"], "manual_review")
+
+    def test_retry_window_stops_without_calling_summary(self) -> None:
+        calls = []
+        existing_retry = {
+            "attempt_count": 1,
+            "first_failed_at": (self.now - timedelta(hours=25)).isoformat(),
+            "last_error": "temporary failure",
+        }
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str) -> str:
+            calls.append(video_title)
+            return "should not run"
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            existing_retry=existing_retry,
+            clock=lambda: self.now,
+            sleep_fn=lambda seconds: None,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertIsNone(summary)
+        self.assertEqual(calls, [])
+        self.assertEqual(retry_state["stopped_reason"], "retry_window_exceeded")
+        self.assertEqual(retry_state["next_step"], "manual_review")
+
+
+class ManifestCompletionTests(unittest.TestCase):
+    def test_manifest_is_complete_only_when_no_failed_or_pending_summaries(self) -> None:
+        self.assertTrue(is_manifest_complete({"failed_count": 0, "pending_summary_count": 0}))
+        self.assertFalse(is_manifest_complete({"failed_count": 0, "pending_summary_count": 1}))
+        self.assertEqual(
+            manifest_completion_status({"failed_count": 0, "pending_summary_count": 1}),
+            "partial",
+        )
+
+
+class RetryPendingSummariesTests(unittest.TestCase):
+    def test_retry_pending_summaries_only_processes_pending_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = knowledge_digest_module.DigestConfig(
+                playlist_url="https://www.youtube.com/playlist?list=PL123",
+                playlist_name="knowledge",
+                timezone="Asia/Shanghai",
+                browser="chrome",
+                browser_mode="managed",
+                chrome_channel="chrome",
+                chrome_user_data_dir="data/chrome-automation-profile",
+                chrome_source_profile_dir="/tmp/chrome",
+                chrome_automation_profile_dir="data/chrome-automation-profile",
+                chrome_cdp_url="http://127.0.0.1:9222",
+                youtube_client_secrets_path="data/youtube-oauth-client.json",
+                youtube_token_path="data/youtube-oauth-token.json",
+                openai_base_url="",
+                openai_model="",
+                summary_language="zh-CN",
+                mlx_whisper_model="mlx-community/whisper-small-mlx",
+                output_root=str(root / "runs"),
+            )
+            target_date = date(2026, 6, 10)
+            run_dir = config.output_root_path / target_date.isoformat()
+            pending_dir = run_dir / "videos" / "pending"
+            ready_dir = run_dir / "videos" / "ready"
+            pending_dir.mkdir(parents=True)
+            ready_dir.mkdir(parents=True)
+            (pending_dir / "transcript.original.txt").write_text("pending transcript", encoding="utf-8")
+            (ready_dir / "transcript.original.txt").write_text("ready transcript", encoding="utf-8")
+            _write_json(
+                run_dir / "manifest.json",
+                {
+                    "browser_mode": "managed",
+                    "run_mode": "full",
+                    "incremental_stats": {},
+                    "processed_videos": [
+                        {
+                            "id": "ready",
+                            "title": "Ready",
+                            "url": "https://www.youtube.com/watch?v=ready",
+                            "channel_name": "Channel",
+                            "processing_status": "summary_ready",
+                            "summary_text": "old",
+                            "transcript_path": "videos/ready/transcript.original.txt",
+                            "transcript_language": "en",
+                            "transcript_source": "manual",
+                        },
+                        {
+                            "id": "pending",
+                            "title": "Pending",
+                            "url": "https://www.youtube.com/watch?v=pending",
+                            "channel_name": "Channel",
+                            "processing_status": "pending_summary",
+                            "summary_error": "old error",
+                            "transcript_path": "videos/pending/transcript.original.txt",
+                            "transcript_language": "en",
+                            "transcript_source": "manual",
+                        },
+                    ],
+                    "failed_videos": [],
+                    "needs_review_videos": [],
+                },
+            )
+            calls = []
+
+            def fake_retry(transcript_text: str, video_title: str, settings: dict, playlist_name: str, **kwargs):
+                calls.append(video_title)
+                return "new summary", {"attempt_count": 1, "last_error": None}
+
+            with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                with mock.patch.object(knowledge_digest_module, "summarize_transcript_with_retries", side_effect=fake_retry):
+                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
+                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                            with mock.patch.object(knowledge_digest_module, "save_state"):
+                                manifest = retry_pending_summaries(config, target_date)
+
+            self.assertEqual(calls, ["Pending"])
+            self.assertEqual(manifest["pending_summary_count"], 0)
+            self.assertEqual(manifest["summary_ready_count"], 2)
+
+
 class GenerateMarkdownTests(unittest.TestCase):
     def test_generate_markdown_includes_summary_and_transcript_excerpt(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -411,6 +619,15 @@ class CliTests(unittest.TestCase):
                 with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21"]):
                     exit_code = cli_module.main()
         self.assertEqual(exit_code, 1)
+        mocked_sync.assert_called_once()
+
+    def test_cli_partial_manifest_returns_partial_exit_code_after_sync(self) -> None:
+        manifest = {"failed_count": 0, "pending_summary_count": 1}
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value=manifest):
+            with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0) as mocked_sync:
+                with mock.patch.object(sys, "argv", ["run_knowledge_digest.py", "--target-date", "2026-03-21"]):
+                    exit_code = cli_module.main()
+        self.assertEqual(exit_code, 2)
         mocked_sync.assert_called_once()
 
     def test_cli_non_content_mode_skips_auto_sync(self) -> None:

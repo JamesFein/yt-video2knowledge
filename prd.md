@@ -2,58 +2,24 @@
 
 ## 解决方案
 
-保持现有 `launchd + 本地 queue worker` 架构，不引入 Celery。当前 workflow 是单机、本地优先、每天一次的 digest 任务，问题可以通过增强现有 worker 的重试、状态和锁处理解决，不需要引入分布式队列系统。
+本 PRD 保留稳定性改进的实现要求、测试方案和验收标准。长期设计决策记录在以下 ADR 中：
 
-为摘要生成增加有限自动重试。单个视频总结失败后，只重试该视频的总结步骤，不重新抓取整天视频、不重跑已成功的视频。重试使用退避间隔，例如：
+- [ADR-0001: Use launchd and local queue worker instead of Celery](docs/adr/0001-use-launchd-local-queue-worker.md)
+- [ADR-0002: Use manifest as completion authority](docs/adr/0002-use-manifest-as-completion-authority.md)
+- [ADR-0003: Bound pending summary retries](docs/adr/0003-bound-pending-summary-retries.md)
+- [ADR-0004: Make worker interruption safe](docs/adr/0004-make-worker-interruption-safe.md)
+- [ADR-0005: Do not force restart a running worker](docs/adr/0005-do-not-force-restart-running-worker.md)
 
-```text
-第 1 次失败 -> 等 30 秒后重试
-第 2 次失败 -> 等 2 分钟后重试
-第 3 次失败 -> 等 5 分钟后重试
-仍失败 -> 标记为 pending_summary，交给整日补跑机制
-```
+实现要求：
 
-整日任务结束后，如果 manifest 中仍有 `pending_summary`，worker 自动触发一次只针对 pending 视频的补跑，相当于运行 `--retry-summaries`。如果补跑仍未清零，则后续按更长间隔继续补跑，例如 10 分钟、1 小时、下一次 daily worker tick。
-
-自动重试必须有停止条件，避免无限消耗 API 和让任务永远处于未完成状态。建议停止条件为：
-
-```text
-同一个视频总结最多尝试 5 次
-或超过 24 小时仍未成功
-或错误明显不是临时问题，例如凭据失效、配置错误、参数错误
-```
-
-达到停止条件后，不再自动重试该视频，保留可诊断状态，并将其标记为 `needs_review` 或继续保留为带错误原因的 `pending_summary`。
-
-worker 收到 SIGTERM/SIGINT 时执行中断保护。中断保护的目标是避免出现“进程已经死了，但状态还显示 running，锁还留着”的假运行状态。worker 被中断时应执行以下收尾：
-
-```text
-1. 记录当前任务被 interrupted
-2. 将状态从 running 改为 idle / interrupted
-3. 释放 worker lock
-4. 保留未完成请求，不把它当作成功处理
-5. 下一次 worker 启动时继续处理该请求
-```
-
-lock 中写入 `pid`、`started_at` 和 `heartbeat`。`show_status.py` 查询状态时应检查 lock 里的进程是否仍然存活，以及 heartbeat 是否过期。如果进程不存在或 heartbeat 长时间未更新，应报告 stale lock，并允许 worker 安全恢复，不再只根据 lock 文件存在就认为任务仍在运行。
-
-OpenClaw 只负责入队和查看状态，不直接强制重启正在执行的 worker。禁止用 `launchctl kickstart -k` 强制重启执行中的 worker，因为 `-k` 会先杀掉旧进程，容易打断正在运行的 digest。正确操作是：
-
-```text
-1. 使用 queue_request.py 入队目标日期
-2. 使用 show_status.py 查看状态
-3. 等待 launchd 的 5 分钟 tick 接单
-4. 如需排障，先确认 worker 未在运行，再做重启操作
-```
-
-成功标准改为以 manifest 结果为准，而不是只看进程 exit code。一次目标日期处理只有在满足以下条件时才算完成：
-
-```text
-failed_count = 0
-pending_summary_count = 0
-```
-
-如果进程 exit code 为 0，但 manifest 里仍有 `pending_summary`，这次运行只能算“部分成功，需要补跑”，不能向用户报告为完全成功。
+1. 沿用 `launchd + 本地 queue worker`，不引入 Celery。
+2. 为摘要生成增加有限自动重试。单个视频总结失败后，只重试该视频的总结步骤，不重新抓取整天视频、不重跑已成功的视频。重试使用退避间隔，例如 30 秒、2 分钟、5 分钟。
+3. 整日任务结束后，如果 manifest 中仍有 `pending_summary`，worker 自动触发一次只针对 pending 视频的补跑，相当于运行 `--retry-summaries`。如果补跑仍未清零，后续按更长间隔继续补跑，例如 10 分钟、1 小时、下一次 daily worker tick。
+4. 自动重试必须有停止条件：同一个视频总结最多尝试 5 次，或超过 24 小时仍未成功，或错误明显不是临时问题，例如凭据失效、配置错误、参数错误。达到停止条件后，不再自动重试该视频，并保留可诊断状态。
+5. worker 收到 SIGTERM/SIGINT 时执行中断保护：记录当前任务被 interrupted，将状态从 running 改为 idle / interrupted，释放 worker lock，保留未完成请求，不把它当作成功处理。
+6. lock 中写入 `pid`、`started_at` 和 `heartbeat`。`show_status.py` 查询状态时应检查 lock 里的进程是否仍然存活，以及 heartbeat 是否过期。stale lock 应被明确报告，并允许 worker 安全恢复。
+7. OpenClaw 只负责入队和查看状态，不直接强制重启正在执行的 worker。正确操作是使用 `queue_request.py` 入队目标日期，使用 `show_status.py` 查看状态，等待 launchd 的 5 分钟 tick 接单；如需排障，先确认 worker 未在运行，再做重启操作。
+8. 一次目标日期处理只有在 manifest 中 `failed_count = 0` 且 `pending_summary_count = 0` 时才算完成。如果进程 exit code 为 0，但 manifest 里仍有 `pending_summary`，这次运行只能算“部分成功，需要补跑”，不能向用户报告为完全成功。
 
 ## 测试方案
 
