@@ -123,13 +123,10 @@ class KnowledgeSiteApiTests(unittest.TestCase):
                 video_page.text,
             )
             self.assertIn('aria-label="一句话总结 / 可执行启发"', video_page.text)
-            self.assertIn('class="block-heading-context"', video_page.text)
-            self.assertIn('<span class="block-heading-context">一句话总结</span>', video_page.text)
-            self.assertIn('<span class="block-heading-separator" aria-hidden="true">/</span>', video_page.text)
-            self.assertIn('<span class="block-heading-current">可执行启发</span>', video_page.text)
-            self.assertIn("<pre>Try it.</pre>", video_page.text)
+            self.assertIn('<p class="block-eyebrow">一句话总结</p>', video_page.text)
+            self.assertIn('<h3 class="block-subhead" aria-label="一句话总结 / 可执行启发">可执行启发</h3>', video_page.text)
+            self.assertIn('<p class="seg-paragraph">Try it.</p>', video_page.text)
             self.assertIn('<textarea class="block-text" hidden>Try it.</textarea>', video_page.text)
-            self.assertNotIn("<pre>可执行启发", video_page.text)
             self.assertNotIn('<textarea class="block-text" hidden>可执行启发', video_page.text)
             self.assertNotIn("直接内容", video_page.text)
             video_page_from_day = client.get("/videos/ready?day=2026-06-01")
@@ -237,6 +234,70 @@ class MarkdownBlockTests(unittest.TestCase):
 
         self.assertNotIn("Parent", paths)
         self.assertIn("Parent / Child", paths)
+
+
+class BodySegmentTests(unittest.TestCase):
+    def _segments(self, body: str):
+        from knowledge_site.markdown_blocks import parse_body_segments
+
+        return parse_body_segments(body)
+
+    def test_paragraph_with_inline_strong(self) -> None:
+        segments = self._segments("普通文本 **加粗片段** 收尾。")
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].kind, "paragraph")
+        strong_runs = [run for run in segments[0].runs if run.strong]
+        self.assertEqual([run.text for run in strong_runs], ["加粗片段"])
+
+    def test_subhead_segment(self) -> None:
+        segments = self._segments("### 显式标识（水印）\n\n肉眼可见。")
+        self.assertEqual(segments[0].kind, "subhead")
+        self.assertEqual(segments[0].runs[0].text, "显式标识（水印）")
+        self.assertEqual(segments[1].kind, "paragraph")
+
+    def test_unordered_list(self) -> None:
+        segments = self._segments("- 第一项\n- 第二项")
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].kind, "list")
+        self.assertFalse(segments[0].ordered)
+        self.assertEqual([item.runs[0].text for item in segments[0].items], ["第一项", "第二项"])
+
+    def test_ordered_list(self) -> None:
+        segments = self._segments("1. 甲\n2. 乙")
+        self.assertEqual(segments[0].kind, "list")
+        self.assertTrue(segments[0].ordered)
+
+    def test_nested_list_levels(self) -> None:
+        segments = self._segments("- 顶层\n  - 次层\n    - 三层")
+        levels = [item.level for item in segments[0].items]
+        self.assertEqual(levels, [0, 1, 2])
+
+    def test_blockquote_segment(self) -> None:
+        segments = self._segments("> 这是作者推断，不是结论。")
+        self.assertEqual(segments[0].kind, "blockquote")
+        self.assertEqual(segments[0].runs[0].text, "这是作者推断，不是结论。")
+
+    def test_ordered_then_unordered_split_into_two_lists(self) -> None:
+        segments = self._segments("1. 甲\n- 乙")
+        kinds = [seg.kind for seg in segments]
+        self.assertEqual(kinds, ["list", "list"])
+        self.assertTrue(segments[0].ordered)
+        self.assertFalse(segments[1].ordered)
+
+    def test_code_block_does_not_break_parsing(self) -> None:
+        segments = self._segments("段落。\n\n```\ncode line\n```\n\n- 列表项")
+        kinds = [seg.kind for seg in segments]
+        self.assertIn("paragraph", kinds)
+        self.assertIn("list", kinds)
+
+    def test_empty_body_has_no_segments(self) -> None:
+        self.assertEqual(self._segments(""), ())
+
+    def test_block_carries_body_segments(self) -> None:
+        blocks = split_markdown_blocks("## 关键观点\n\n正文 **重点**。\n\n- 项目")
+        block = next(b for b in blocks if b.heading_text == "关键观点")
+        kinds = [seg.kind for seg in block.body_segments]
+        self.assertEqual(kinds, ["paragraph", "list"])
 
 
 if __name__ == "__main__":

@@ -1,12 +1,34 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]+\)")
 _THEMATIC_BREAK_RE = re.compile(r"^([-*_])(?:\s*\1){2,}\s*$")
+_LIST_ITEM_RE = re.compile(r"^(\s*)(?:([-*+])|(\d+)\.)\s+(.*)$")
+_INLINE_STRONG_RE = re.compile(r"\*\*[^*]+\*\*|__[^_]+__")
+
+
+@dataclass(frozen=True)
+class TextRun:
+    text: str
+    strong: bool = False
+
+
+@dataclass(frozen=True)
+class ListItem:
+    runs: tuple[TextRun, ...]
+    level: int = 0
+
+
+@dataclass(frozen=True)
+class BodySegment:
+    kind: str  # "paragraph" | "subhead" | "blockquote" | "list"
+    runs: tuple[TextRun, ...] = ()
+    items: tuple[ListItem, ...] = ()
+    ordered: bool = False
 
 
 @dataclass(frozen=True)
@@ -18,6 +40,7 @@ class MarkdownBlock:
     plain_text: str
     body_plain_text: str
     heading_ancestors: tuple[str, ...] = ()
+    body_segments: tuple[BodySegment, ...] = field(default=())
 
 
 def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
@@ -72,9 +95,102 @@ def split_markdown_blocks(markdown: str) -> list[MarkdownBlock]:
                     plain_text=plain_text,
                     body_plain_text=body_plain_text,
                     heading_ancestors=ancestors,
+                    body_segments=parse_body_segments(body_markdown),
                 )
             )
     return blocks
+
+
+def _inline_runs(text: str) -> tuple[TextRun, ...]:
+    text = _LINK_RE.sub(r"\1", text)
+    text = text.replace("`", "")
+    runs: list[TextRun] = []
+    last = 0
+    for match in _INLINE_STRONG_RE.finditer(text):
+        if match.start() > last:
+            runs.append(TextRun(text[last : match.start()]))
+        inner = match.group(0)[2:-2]
+        if inner:
+            runs.append(TextRun(inner, strong=True))
+        last = match.end()
+    if last < len(text):
+        runs.append(TextRun(text[last:]))
+    return tuple(run for run in runs if run.text) or (TextRun(""),)
+
+
+def parse_body_segments(body_markdown: str) -> tuple[BodySegment, ...]:
+    segments: list[BodySegment] = []
+    paragraph: list[str] = []
+    quote: list[str] = []
+    items: list[ListItem] = []
+    list_ordered = False
+    in_code_block = False
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            segments.append(BodySegment("paragraph", runs=_inline_runs(" ".join(paragraph))))
+            paragraph.clear()
+
+    def flush_quote() -> None:
+        if quote:
+            segments.append(BodySegment("blockquote", runs=_inline_runs(" ".join(quote))))
+            quote.clear()
+
+    def flush_list() -> None:
+        nonlocal items, list_ordered
+        if items:
+            segments.append(BodySegment("list", items=tuple(items), ordered=list_ordered))
+            items = []
+            list_ordered = False
+
+    def flush_all() -> None:
+        flush_paragraph()
+        flush_quote()
+        flush_list()
+
+    for raw_line in body_markdown.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            paragraph.append(stripped)
+            continue
+        if not stripped or _THEMATIC_BREAK_RE.match(stripped):
+            flush_all()
+            continue
+
+        heading = _HEADING_RE.match(stripped)
+        if heading:
+            flush_all()
+            segments.append(BodySegment("subhead", runs=_inline_runs(heading.group(2).strip())))
+            continue
+
+        if stripped.startswith(">"):
+            flush_paragraph()
+            flush_list()
+            quote.append(stripped.lstrip(">").strip())
+            continue
+
+        list_match = _LIST_ITEM_RE.match(raw_line)
+        if list_match:
+            flush_paragraph()
+            flush_quote()
+            indent, bullet, _, content = list_match.group(1), list_match.group(2), list_match.group(3), list_match.group(4)
+            ordered = bullet is None
+            if items and ordered != list_ordered:
+                flush_list()
+            list_ordered = ordered
+            level = len(indent.replace("\t", "  ")) // 2
+            items.append(ListItem(runs=_inline_runs(content.strip()), level=min(level, 2)))
+            continue
+
+        flush_quote()
+        flush_list()
+        paragraph.append(stripped)
+
+    flush_all()
+    return tuple(segments)
 
 
 def markdown_to_plain_text(markdown: str) -> str:

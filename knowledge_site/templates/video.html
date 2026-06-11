@@ -35,20 +35,34 @@
         <div class="block-list">
           {% for block in blocks %}
             {% set block_text = block.body_plain_text|default(block.plain_text, true) %}
+            {% if block.heading_ancestors and (loop.first or block.heading_ancestors != loop.previtem.heading_ancestors) %}
+              <p class="block-eyebrow">{{ block.heading_ancestors|join(" / ") }}</p>
+            {% endif %}
             <article class="summary-block">
-              <label>
-                <input type="checkbox" data-block-check>
-                <span class="block-heading" aria-label="{{ block.heading_path }}">
-                  <span class="block-heading-breadcrumb">
-                    {% for ancestor in block.heading_ancestors %}
-                      <span class="block-heading-context">{{ ancestor }}</span>
-                      <span class="block-heading-separator" aria-hidden="true">/</span>
-                    {% endfor %}
-                    <span class="block-heading-current">{{ block.heading_text }}</span>
-                  </span>
-                </span>
-              </label>
-              <pre>{{ block_text }}</pre>
+              <input type="checkbox" data-block-check class="block-pick" aria-label="选入 Meta Summary：{{ block.heading_text }}">
+              <div class="block-body">
+                <h3 class="block-subhead" aria-label="{{ block.heading_path }}">{{ block.heading_text }}</h3>
+                {% if block.body_segments %}
+                  {% for segment in block.body_segments %}
+                    {% if segment.kind == "subhead" %}
+                      <h4 class="seg-subhead">{% for run in segment.runs %}{% if run.strong %}<strong>{{ run.text }}</strong>{% else %}{{ run.text }}{% endif %}{% endfor %}</h4>
+                    {% elif segment.kind == "blockquote" %}
+                      <blockquote class="seg-quote">{% for run in segment.runs %}{% if run.strong %}<strong>{{ run.text }}</strong>{% else %}{{ run.text }}{% endif %}{% endfor %}</blockquote>
+                    {% elif segment.kind == "list" %}
+                      {% set tag = "ol" if segment.ordered else "ul" %}
+                      <{{ tag }} class="seg-list">
+                        {% for item in segment.items %}
+                          <li class="seg-list-item" data-level="{{ item.level }}">{% for run in item.runs %}{% if run.strong %}<strong>{{ run.text }}</strong>{% else %}{{ run.text }}{% endif %}{% endfor %}</li>
+                        {% endfor %}
+                      </{{ tag }}>
+                    {% else %}
+                      <p class="seg-paragraph">{% for run in segment.runs %}{% if run.strong %}<strong>{{ run.text }}</strong>{% else %}{{ run.text }}{% endif %}{% endfor %}</p>
+                    {% endif %}
+                  {% endfor %}
+                {% else %}
+                  <pre>{{ block_text }}</pre>
+                {% endif %}
+              </div>
               <textarea class="block-text" hidden>{{ block_text }}</textarea>
             </article>
           {% endfor %}
