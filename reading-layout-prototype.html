@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>阅读排版原型 · 最终整页效果</title>
+<style>
+  /* ===== 站点 site.css 设计令牌（保持一致） ===== */
+  :root {
+    color-scheme: light;
+    --bg: #f7f4ee;
+    --paper: #fffdf8;
+    --surface: #fffaf0;
+    --surface-soft: #eef3ef;
+    --ink: #171b1a;
+    --text: #252a28;
+    --muted: #707a75;
+    --faint: #8d9690;
+    --line: #d8d1c4;
+    --line-strong: #b9afa0;
+    --accent: #0f766e;
+    --accent-dark: #0b5f58;
+    --accent-soft: #dcecea;
+    --shadow: 0 18px 48px rgba(35, 31, 24, 0.08);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    --font-serif: Georgia, "Times New Roman", "Songti SC", SimSun, serif;
+    /* 长篇中文正文专用流体字号（reading-heavy，偏向 18px，移动端不缩小） */
+    --read-size: clamp(16.5px, 1rem + 0.3vw, 18px);
+    --read-leading: 1.9;          /* 中文正文行距比拉丁更松 */
+    --read-measure: 36em;         /* 约 36 个汉字/行，中文舒适区 */
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 原型控制条（非站点内容） ===== */
+  .proto-bar {
+    position: sticky; top: 0; z-index: 60;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 12px 20px;
+    background: rgba(247,244,238,0.92);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .proto-bar strong { font-family: var(--font-serif); font-size: 16px; color: var(--ink); }
+  .proto-bar .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
+  .proto-bar .seg button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    font: inherit; font-size: 13px; font-weight: 700; color: var(--muted); padding: 7px 14px;
+  }
+  .proto-bar .seg button[aria-pressed="true"] { background: var(--accent-dark); color: #fff; }
+  .proto-hint { color: var(--faint); font-size: 12px; }
+
+  /* 视口模拟容器：手机宽 / 桌面宽 */
+  .viewport { margin: 0 auto; transition: max-width 160ms ease; }
+  body[data-width="phone"] .viewport { max-width: 412px; }
+  body[data-width="wide"]  .viewport { max-width: 1180px; }
+  body[data-width="phone"] .device-frame {
+    border: 1px solid var(--line-strong); border-radius: 22px; overflow: hidden;
+    box-shadow: var(--shadow); margin-top: 18px; background: var(--bg);
+  }
+
+  .view { display: none; }
+  body[data-view="page"] #view-page { display: block; }
+  body[data-view="compare"] #view-compare { display: block; }
+
+  /* ================= 站点基础（复用 site.css） ================= */
+  .site-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 18px;
+    min-height: 60px; padding: 0 28px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(247, 244, 238, 0.9);
+  }
+  body[data-width="phone"] .site-header { padding: 0 18px; min-height: 54px; }
+  .brand { display: inline-flex; align-items: baseline; gap: 7px; color: var(--ink);
+    font-family: var(--font-serif); font-size: 22px; font-weight: 700; letter-spacing: -0.02em; text-decoration: none; }
+  .brand span + span { color: var(--accent-dark); font-style: italic; font-weight: 500; }
+  body[data-width="phone"] .brand { font-size: 20px; }
+
+  .page { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 80px; }
+  body[data-width="phone"] .page { width: calc(100% - 28px); padding: 22px 0 90px; }
+
+  .breadcrumbs { color: var(--faint); font-size: 13px; margin-bottom: 16px; }
+  .breadcrumbs a { color: var(--muted); }
+
+  .button {
+    appearance: none; border: 1px solid var(--accent-dark); border-radius: 7px;
+    background: var(--accent-dark); color: #fff; cursor: pointer; font: inherit;
+    font-size: 14px; font-weight: 700; min-height: 38px; padding: 8px 14px; white-space: nowrap;
+    transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .button:hover { background: var(--accent); border-color: var(--accent); box-shadow: 0 8px 18px rgba(15,118,110,.16); }
+  .button-secondary { background: var(--ink); border-color: var(--ink); }
+  .button-ghost { background: transparent; border-color: var(--line-strong); color: var(--text); }
+
+  /* ---------- 视频抬头 ---------- */
+  .video-heading {
+    display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
+    gap: 28px; align-items: center;
+    border-bottom: 1px solid var(--line); padding-bottom: 26px; margin-bottom: 26px;
+  }
+  body[data-width="phone"] .video-heading { grid-template-columns: 1fr; gap: 16px; }
+  .thumbnail { width: 100%; aspect-ratio: 16/9; object-fit: cover; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--surface-soft); box-shadow: var(--shadow); }
+  body[data-width="phone"] .thumbnail { max-width: 520px; }
+  /* CJK 修正：大标题字距归零（负字距会挤压中文），加孤字平衡 */
+  .video-title-block h1 {
+    margin: 0 0 10px; color: var(--ink); font-family: var(--font-serif);
+    font-size: clamp(30px, 4.2vw, 50px); font-weight: 650;
+    letter-spacing: 0; line-height: 1.12; text-wrap: balance;
+  }
+  body[data-width="phone"] .video-title-block h1 { font-size: 30px; }
+  .video-source { color: var(--muted); font-size: 15px; margin: 0; }
+  .source-link { display: inline-block; margin-top: 14px; font-weight: 700; color: var(--accent-dark); }
+
+  /* ---------- 工作区两栏 ---------- */
+  .workspace { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(330px, .95fr); gap: 30px; align-items: start; }
+  body[data-width="phone"] .workspace { grid-template-columns: 1fr; gap: 28px; }
+  .summary-column, .meta-column { min-width: 0; }
+  .meta-column { position: sticky; top: 20px; }
+  body[data-width="phone"] .meta-column { position: static; }
+
+  .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+    border-bottom: 1px solid var(--line-strong); margin-bottom: 18px; padding-bottom: 12px; }
+  .section-title h2 { margin: 0; color: var(--ink); font-family: var(--font-serif);
+    font-size: 22px; font-weight: 650; letter-spacing: 0; line-height: 1.1; }
+  body[data-width="phone"] .section-title { flex-direction: column; align-items: flex-start; }
+
+  /* ===================================================================
+     阅读区「改造后」核心样式 —— 这套即将落到线上 site.css
+     =================================================================== */
+  .a-section { margin-bottom: 38px; }
+  .a-section:last-child { margin-bottom: 0; }
+  /* 父级面包屑：整段只显示一次，弱化为 eyebrow */
+  .a-eyebrow { display: block; margin: 0 0 6px; color: var(--faint);
+    font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+  .a-section-head { border-bottom: 2px solid var(--ink); margin-bottom: 20px; padding-bottom: 9px; }
+  .a-section-head h3 { margin: 0; color: var(--ink); font-family: var(--font-serif);
+    font-size: clamp(21px, 3vw, 26px); font-weight: 650; letter-spacing: 0; line-height: 1.12; text-wrap: balance; }
+
+  .a-block { position: relative; border-bottom: 1px solid var(--line); padding: 4px 0 20px; margin-bottom: 18px; }
+  .a-block:last-child { border-bottom: 0; margin-bottom: 0; }
+
+  /* 恢复正文内部层级：小标题真正成为小标题（上松下紧，与正文成组） */
+  .a-subhead { margin: 0 0 8px; color: var(--ink); font-family: var(--font-serif);
+    font-size: clamp(18px, 2.4vw, 21px); font-weight: 650; line-height: 1.32;
+    letter-spacing: 0; text-wrap: balance; }
+  .a-subhead + .a-body { margin-top: 0; }
+
+  /* 长中文正文：宋体 + 流体字号 + 限行宽 + 大行距 */
+  .a-body { max-width: var(--read-measure); margin: 0; color: #2b2f2c;
+    font-family: var(--font-serif); font-size: var(--read-size); line-height: var(--read-leading); }
+  .a-body + .a-body { margin-top: 14px; }
+  .a-body strong { font-weight: 700; color: var(--ink); }
+
+  /* 列表型正文恢复项目符号 */
+  .a-list { max-width: var(--read-measure); margin: 10px 0 0; padding-left: 1.3em; }
+  .a-list li { font-family: var(--font-serif); font-size: var(--read-size); line-height: 1.85; color: #2b2f2c; margin: 0 0 7px; }
+  .a-list li::marker { color: var(--accent); }
+
+  /* 一句话总结：轻量引述锚点 */
+  .a-tldr { border-left: 3px solid var(--accent); background: var(--surface);
+    border-radius: 0 8px 8px 0; padding: 16px 20px; max-width: 40em; }
+  .a-tldr .a-body { font-size: clamp(17.5px, 1.05rem + 0.3vw, 19px); margin: 0; }
+
+  /* 复选框退出阅读态：默认隐形，hover/聚焦/勾选才现（桌面借左侧空白） */
+  .a-pick { position: absolute; left: -30px; top: 7px; opacity: 0; transition: opacity 140ms ease;
+    accent-color: var(--accent); height: 17px; width: 17px; margin: 0; cursor: pointer; }
+  .a-block:hover .a-pick, .a-pick:focus-visible, .a-pick:checked { opacity: 1; }
+  .a-block:has(.a-pick:checked) { background: var(--accent-soft); border-radius: 8px;
+    padding-left: 14px; padding-right: 14px; box-shadow: -10px 0 0 var(--accent-soft); }
+
+  /* 窄屏/触屏：无 hover 可借，复选框回到行内且常驻可点（保证手机上仍能勾选写入） */
+  @media (hover: none), (max-width: 720px) {
+    .a-pick { position: static; float: left; opacity: 1; margin: 5px 10px 0 0; }
+    .a-block:has(.a-pick:checked) { box-shadow: none; }
+    /* 引用块（一句话总结）有左边框，浮动框会压线 → 复选框单独占一行放在上方 */
+    .a-block:has(.a-tldr) .a-pick { float: none; display: block; margin: 0 0 10px; }
+  }
+  body[data-width="phone"] .a-pick { position: static; float: left; opacity: 1; margin: 5px 10px 0 0; }
+  body[data-width="phone"] .a-block:has(.a-pick:checked) { box-shadow: none; }
+  body[data-width="phone"] .a-block:has(.a-tldr) .a-pick { float: none; display: block; margin: 0 0 10px; }
+
+  /* ---------- Meta 编辑器 ---------- */
+  .meta-editor { width: 100%; min-height: 320px; resize: vertical; border: 1px solid var(--line);
+    border-radius: 7px; background: var(--paper); color: var(--text); font: inherit; line-height: 1.7; padding: 12px; }
+  .save-state { color: var(--muted); font-size: 14px; min-height: 21px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+
+  /* ---------- 对比视图 ---------- */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  body[data-width="phone"] .compare { grid-template-columns: 1fr; }
+  .pane { padding: 24px clamp(16px, 3vw, 32px) 40px; }
+  .pane + .pane { border-left: 1px dashed var(--line-strong); }
+  body[data-width="phone"] .pane + .pane { border-left: 0; border-top: 1px dashed var(--line-strong); }
+  .pane-tag { display: inline-block; margin-bottom: 16px; padding: 4px 11px; border-radius: 999px;
+    font-size: 12px; font-weight: 800; }
+  .pane-before .pane-tag { background: #f3e3df; color: #9f1239; }
+  .pane-after .pane-tag { background: var(--accent-soft); color: var(--accent-dark); }
+  /* before 还原现状关键规则 */
+  .b-block { background: var(--paper); border-bottom: 1px solid var(--line); padding: 18px 2px 20px; }
+  .b-block:first-of-type { border-top: 1px solid var(--line); }
+  .b-block label { display: grid; grid-template-columns: 18px minmax(0,1fr); gap: 11px; align-items: start; margin: 0; }
+  .b-breadcrumb { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 6px; }
+  .b-ctx, .b-sep { color: var(--faint); font-size: 12px; font-weight: 600; }
+  .b-current { color: var(--ink); font-family: var(--font-serif); font-size: 20px; font-weight: 650; }
+  .b-block pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 11px 0 0 29px; color: #363a36; font: inherit; line-height: 1.68; }
+  body[data-width="phone"] .b-block pre { margin-left: 0; }
+</style>
+</head>
+<body data-view="page" data-width="phone">
+
+<div class="proto-bar">
+  <strong>阅读排版原型</strong>
+  <span class="proto-hint">最终整页效果 · 复选框/写入/保存可实际操作</span>
+  <span style="flex:1"></span>
+  <span class="seg" id="viewSeg">
+    <button data-view="page" aria-pressed="true">最终整页</button>
+    <button data-view="compare" aria-pressed="false">阅读区对比</button>
+  </span>
+  <span class="seg" id="widthSeg">
+    <button data-width="phone" aria-pressed="true">手机宽</button>
+    <button data-width="wide" aria-pressed="false">桌面宽</button>
+  </span>
+</div>
+
+<!-- ============================ 视图一：最终整页 ============================ -->
+<div class="view" id="view-page">
+  <div class="viewport">
+    <div class="device-frame">
+      <header class="site-header">
+        <a class="brand" href="#"><span>Knowledge</span><span>Site</span></a>
+        <button class="button button-ghost" type="button">退出</button>
+      </header>
+
+      <main class="page" data-video-id="-D2bI9VAiO8">
+        <nav class="breadcrumbs"><a href="#">日期</a> / <a href="#">2026-06-10</a> / <span>裁员血腥内幕</span></nav>
+
+        <section class="video-heading">
+          <img class="thumbnail" alt="" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='180'><rect width='320' height='180' fill='%23eef3ef'/><text x='50%25' y='52%25' font-family='sans-serif' font-size='15' fill='%238d9690' text-anchor='middle'>缩略图</text></svg>">
+          <div class="video-title-block">
+            <h1>科技大裁员的血腥内幕：AI 军备竞赛如何系统性替换"人"</h1>
+            <p class="video-source">獨特見解 · 26:04</p>
+            <a class="source-link" href="#" target="_blank" rel="noreferrer">打开视频 ↗</a>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <div class="summary-column">
+            <div class="section-title">
+              <h2>Summary</h2>
+              <button class="button button-secondary" type="button" data-action="append-selected">写入 Meta Summary</button>
+            </div>
+
+            <!-- 一句话总结 -->
+            <section class="a-section">
+              <span class="a-eyebrow">【血腥內幕】最终整理</span>
+              <div class="a-section-head"><h3>一句话总结</h3></div>
+              <div class="a-block">
+                <input class="a-pick" type="checkbox" aria-label="选入 Meta Summary"
+                  data-text="一句话总结：科技公司近年的大裁员，并不只是因为业务变差，而是在 AI 军备竞赛、资本市场叙事和就业市场转弱的共同作用下，把人系统性替换成算力、模型、数据中心与更便宜的新劳动力。">
+                <div class="a-tldr">
+                  <p class="a-body">这期内容的核心判断是：科技公司近年的大裁员，<strong>并不只是因为业务变差</strong>，而是在 AI 军备竞赛、资本市场叙事和就业市场转弱的共同作用下，把"人"系统性替换成"算力、模型、数据中心与更便宜的新劳动力"，其短期提升财报，长期却可能削弱软件质量、组织文化与行业创新能力。</p>
+                </div>
+              </div>
+            </section>
+
+            <!-- 关键观点 -->
+            <section class="a-section">
+              <div class="a-section-head"><h3>关键观点</h3></div>
+
+              <div class="a-block">
+                <input class="a-pick" type="checkbox" aria-label="选入 Meta Summary"
+                  data-text="AI 转型正在成为裁员的主叙事：很多公司并非发不出工资，而是主动把员工成本转投到 AI 基础设施，裁员成了向资本市场表忠心的AI投名状。">
+                <h4 class="a-subhead">AI 转型正在成为裁员的主叙事</h4>
+                <p class="a-body">视频认为，很多公司并非"发不出工资"，而是主动把原本用于员工的成本转投到 AI 基础设施，包括服务器、芯片、冷却系统、模型调用和数据能力建设；裁员也因此成了向资本市场表忠心的<strong>"AI 投名状"</strong>。</p>
+              </div>
+
+              <div class="a-block">
+                <input class="a-pick" type="checkbox" aria-label="选入 Meta Summary"
+                  data-text="Meta 被塑造成以员工路径训练 AI 的样本：一边被爆长期记录员工工作数据，一边在录音曝光后裁掉约 8000 人。">
+                <h4 class="a-subhead">Meta 被塑造成"以员工路径训练 AI"的典型样本</h4>
+                <p class="a-body">片中将 Meta 描述为最激进案例：一边被爆长期记录员工工作数据与操作习惯，一边在录音曝光后裁掉约 8000 人。视频据此推论，企业并不是在简单缩编，而是在把员工经验沉淀为可复制流程，再交给 AI 和系统化工具承接。</p>
+                <ul class="a-list">
+                  <li>记录员工操作习惯，沉淀为可复制流程</li>
+                  <li>录音曝光后大规模裁员约 8000 人</li>
+                  <li>把"经验"交给 AI 与系统化工具承接</li>
+                </ul>
+              </div>
+
+              <div class="a-block">
+                <input class="a-pick" type="checkbox" aria-label="选入 Meta Summary"
+                  data-text="ClickUp 的100倍产出说法被视为裁员包装：软件开发不可能轻易实现字面意义上的百倍效率。">
+                <h4 class="a-subhead">ClickUp 的"100 倍产出"说法被视为裁员包装</h4>
+                <p class="a-body">虽然 ClickUp 强调业务处于高点、组织要追求"100 倍产出"、还愿意为能借助 AI 创造高价值的人支付百万美元级别薪酬，但视频认为，软件开发和企业决策不可能轻易实现字面意义上的百倍效率，这更像是用未来叙事来合理化当下裁员与成本压缩。</p>
+              </div>
+            </section>
+          </div>
+
+          <div class="meta-column">
+            <div class="section-title">
+              <h2>Meta Summary</h2>
+              <span class="save-state" data-save-state></span>
+            </div>
+            <textarea class="meta-editor" data-meta-editor placeholder="勾选左侧段落后点写入 Meta Summary，或直接在此编辑…"></textarea>
+            <div class="actions">
+              <button class="button" type="button" data-action="save-meta">保存</button>
+              <button class="button button-ghost" type="button" data-action="clear-meta">清空</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ 视图二：阅读区 改造前/后 ============================ -->
+<div class="view" id="view-compare">
+  <div class="compare">
+    <section class="pane pane-before">
+      <span class="pane-tag">改造前 · 现状</span>
+      <div class="b-block">
+        <label>
+          <input type="checkbox">
+          <span><span class="b-breadcrumb"><span class="b-ctx">【血腥內幕】最终整理</span><span class="b-sep">/</span><span class="b-current">关键观点</span></span></span>
+        </label>
+        <pre>AI 转型正在成为裁员的主叙事
+视频认为，很多公司并非"发不出工资"，而是主动把原本用于员工的成本转投到 AI 基础设施，包括服务器、芯片、冷却系统、模型调用和数据能力建设；裁员也因此成了向资本市场表忠心的"AI 投名状"。
+
+Meta 被塑造成"以员工路径训练 AI"的典型样本
+片中将 Meta 描述为最激进案例：一边被爆长期记录员工工作数据与操作习惯，一边在录音曝光后裁掉约 8000 人。视频据此推论，企业并不是在简单缩编，而是在把员工经验沉淀为可复制流程，再交给 AI 和系统化工具承接。</pre>
+      </div>
+    </section>
+
+    <section class="pane pane-after">
+      <span class="pane-tag">改造后 · 建议</span>
+      <section class="a-section">
+        <div class="a-section-head"><h3>关键观点</h3></div>
+        <div class="a-block">
+          <input class="a-pick" type="checkbox" aria-label="选入">
+          <h4 class="a-subhead">AI 转型正在成为裁员的主叙事</h4>
+          <p class="a-body">视频认为，很多公司并非"发不出工资"，而是主动把原本用于员工的成本转投到 AI 基础设施，包括服务器、芯片、冷却系统、模型调用和数据能力建设；裁员也因此成了向资本市场表忠心的<strong>"AI 投名状"</strong>。</p>
+        </div>
+        <div class="a-block">
+          <input class="a-pick" type="checkbox" aria-label="选入">
+          <h4 class="a-subhead">Meta 被塑造成"以员工路径训练 AI"的典型样本</h4>
+          <p class="a-body">片中将 Meta 描述为最激进案例：一边被爆长期记录员工工作数据与操作习惯，一边在录音曝光后裁掉约 8000 人。视频据此推论，企业并不是在简单缩编，而是在把员工经验沉淀为可复制流程，再交给 AI 和系统化工具承接。</p>
+        </div>
+      </section>
+    </section>
+  </div>
+</div>
+
+<script>
+  function wire(segId, key) {
+    document.getElementById(segId).addEventListener('click', (e) => {
+      const btn = e.target.closest('button'); if (!btn) return;
+      document.body.dataset[key] = btn.dataset[key];
+      [...e.currentTarget.children].forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+    });
+  }
+  wire('viewSeg', 'view');
+  wire('widthSeg', 'width');
+
+  // 还原线上 site.js 的真实交互：写入 / 保存 / 清空（验证功能不丢）
+  const page = document.querySelector('[data-video-id]');
+  const editor = page.querySelector('[data-meta-editor]');
+  const state = page.querySelector('[data-save-state]');
+  function selectedText() {
+    return [...page.querySelectorAll('.a-pick:checked')]
+      .map(i => (i.dataset.text || '').trim()).filter(Boolean).join('\n\n');
+  }
+  page.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]'); if (!btn) return;
+    const action = btn.dataset.action;
+    if (action === 'append-selected') {
+      const t = selectedText(); if (!t) return;
+      const prefix = editor.value.trim() ? editor.value.trim() + '\n\n' : '';
+      editor.value = prefix + t; state.textContent = '已写入';
+    }
+    if (action === 'save-meta') { state.textContent = '已保存（原型模拟）'; }
+    if (action === 'clear-meta') { editor.value = ''; state.textContent = '已清空'; }
+  });
+</script>
+</body>
+</html>
