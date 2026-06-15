@@ -533,6 +533,18 @@ uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-s
 uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID
 ```
 
+如果某条 summary 已经因为临时网络错误达到重试上限，但你确认要再定向尝试一次：
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID --force-summary-retry
+```
+
+如果需要人工接管最后一条 summary，也通过仓库导入，保证 `manifest.json` 和日报同步重建：
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
+```
+
 ## 当前推荐命令清单
 
 ### 1. 一次性 OAuth 授权
@@ -571,6 +583,18 @@ uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --allow-f
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
+```
+
+### 7. 定向恢复卡住的单条总结
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries --video-id VIDEO_ID --force-summary-retry
+```
+
+### 8. 导入人工摘要并重建运行状态
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
 ```
 
 ## 给 OpenClaw 安装并调用这个 Skill

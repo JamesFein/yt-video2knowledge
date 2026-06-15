@@ -62,6 +62,8 @@ def main() -> int:
     parser.add_argument("--allow-fallback-first-seen", action="store_true", help="Allow first-seen fallback when the YouTube API cannot verify playlist added dates.")
     parser.add_argument("--full-reprocess", action="store_true", help="Force a full rerun for the target date instead of default same-day incremental processing.")
     parser.add_argument("--video-id", help="Process a single video directly.")
+    parser.add_argument("--force-summary-retry", action="store_true", help="Force one more pending-summary retry even after the bounded retry stop condition.")
+    parser.add_argument("--adopt-summary-file", help="Adopt a manually prepared Markdown summary for --video-id and rebuild the run manifest.")
     args = parser.parse_args()
 
     target_date = parse_target_date(args.target_date)
@@ -77,6 +79,8 @@ def main() -> int:
             allow_fallback_first_seen=args.allow_fallback_first_seen,
             full_reprocess=args.full_reprocess,
             video_id=args.video_id,
+            force_summary_retry=args.force_summary_retry,
+            adopt_summary_file=Path(args.adopt_summary_file) if args.adopt_summary_file else None,
         )
     except (ConfigurationError, DigestError) as exc:
         print(str(exc), file=sys.stderr)

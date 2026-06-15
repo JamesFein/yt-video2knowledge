@@ -159,10 +159,22 @@ Retry pending summaries:
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
 ```
 
+Force one more bounded single-video summary retry:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries --video-id VIDEO_ID --force-summary-retry
+```
+
 Single-video reprocess or debugging:
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --video-id VIDEO_ID
+```
+
+Adopt a manually prepared summary through the repository workflow:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
 ```
 
 Explicit compatibility fallback:
@@ -185,6 +197,7 @@ Follow these rules by default:
 - Do not re-transcribe videos when the transcript already exists and only summary generation failed.
 - Do not use the whole day as a probe when a single video can isolate the issue.
 - Prefer reading `manifest.json` and existing outputs over lengthy speculative explanation.
+- If a pending summary has reached `max_attempts`, use `--force-summary-retry --video-id VIDEO_ID` for one explicit extra attempt, or `--adopt-summary-file` for repository-tracked manual completion.
 - If output files show progress is stuck at download artifacts like `.part` or `.ytdl`, treat it as a download-stage problem and move to single-video diagnosis instead of repeatedly waiting.
 
 This repository already supports incremental behavior through manifest-backed run state. Use that design instead of fighting it.

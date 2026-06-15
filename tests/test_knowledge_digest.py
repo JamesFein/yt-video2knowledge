@@ -20,6 +20,7 @@ from knowledge_digest import (
     BEIJING_TZ,
     _normalize_playlist_payload,
     _write_json,
+    adopt_summary_for_video,
     extract_playlist_id,
     filter_entries_for_date,
     load_config,
@@ -35,6 +36,28 @@ from knowledge_digest import (
     select_entries_for_processing,
     summarize_transcript_with_retries,
 )
+
+
+def make_test_config(output_root: str) -> knowledge_digest_module.DigestConfig:
+    return knowledge_digest_module.DigestConfig(
+        playlist_url="https://www.youtube.com/playlist?list=PL123",
+        playlist_name="knowledge",
+        timezone="Asia/Shanghai",
+        browser="chrome",
+        browser_mode="managed",
+        chrome_channel="chrome",
+        chrome_user_data_dir="data/chrome-automation-profile",
+        chrome_source_profile_dir="/tmp/chrome",
+        chrome_automation_profile_dir="data/chrome-automation-profile",
+        chrome_cdp_url="http://127.0.0.1:9222",
+        youtube_client_secrets_path="data/youtube-oauth-client.json",
+        youtube_token_path="data/youtube-oauth-token.json",
+        openai_base_url="",
+        openai_model="",
+        summary_language="zh-CN",
+        mlx_whisper_model="mlx-community/whisper-small-mlx",
+        output_root=output_root,
+    )
 
 
 class ParseAddedDateTextTests(unittest.TestCase):
@@ -353,6 +376,69 @@ class SummaryRetryTests(unittest.TestCase):
         self.assertEqual(retry_state["stopped_reason"], "retry_window_exceeded")
         self.assertEqual(retry_state["next_step"], "manual_review")
 
+    def test_existing_max_attempts_stops_without_calling_summary(self) -> None:
+        calls = []
+        existing_retry = {
+            "attempt_count": 3,
+            "last_error": "SSL EOF",
+            "stopped_reason": "max_attempts",
+            "next_step": "manual_review",
+        }
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str) -> str:
+            calls.append(video_title)
+            return "should not run"
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            existing_retry=existing_retry,
+            max_attempts=3,
+            run_attempt_limit=1,
+            clock=lambda: self.now,
+            sleep_fn=lambda seconds: None,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertIsNone(summary)
+        self.assertEqual(calls, [])
+        self.assertEqual(retry_state["stopped_reason"], "max_attempts")
+
+    def test_force_retry_bypasses_max_attempts_once_and_preserves_history(self) -> None:
+        calls = []
+        existing_retry = {
+            "attempt_count": 3,
+            "last_error": "SSL EOF",
+            "stopped_reason": "max_attempts",
+            "next_step": "manual_review",
+        }
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str) -> str:
+            calls.append(video_title)
+            return "forced summary"
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            existing_retry=existing_retry,
+            max_attempts=3,
+            run_attempt_limit=1,
+            force_retry=True,
+            clock=lambda: self.now,
+            sleep_fn=lambda seconds: None,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertEqual(summary, "forced summary")
+        self.assertEqual(calls, ["Video"])
+        self.assertEqual(retry_state["attempt_count"], 4)
+        self.assertIsNone(retry_state["last_error"])
+        self.assertEqual(retry_state["history"][0]["stopped_reason"], "max_attempts")
+
 
 class ManifestCompletionTests(unittest.TestCase):
     def test_manifest_is_complete_only_when_no_failed_or_pending_summaries(self) -> None:
@@ -445,6 +531,118 @@ class RetryPendingSummariesTests(unittest.TestCase):
             self.assertEqual(calls, ["Pending"])
             self.assertEqual(manifest["pending_summary_count"], 0)
             self.assertEqual(manifest["summary_ready_count"], 2)
+
+    def test_retry_pending_summaries_can_force_stopped_video_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = make_test_config(str(root / "runs"))
+            target_date = date(2026, 6, 10)
+            run_dir = config.output_root_path / target_date.isoformat()
+            pending_dir = run_dir / "videos" / "pending"
+            pending_dir.mkdir(parents=True)
+            (pending_dir / "transcript.original.txt").write_text("pending transcript", encoding="utf-8")
+            _write_json(
+                run_dir / "manifest.json",
+                {
+                    "browser_mode": "managed",
+                    "run_mode": "full",
+                    "incremental_stats": {},
+                    "processed_videos": [
+                        {
+                            "id": "pending",
+                            "title": "Pending",
+                            "url": "https://www.youtube.com/watch?v=pending",
+                            "channel_name": "Channel",
+                            "processing_status": "pending_summary",
+                            "summary_error": "SSL EOF",
+                            "summary_retry": {
+                                "attempt_count": 5,
+                                "last_error": "SSL EOF",
+                                "stopped_reason": "max_attempts",
+                                "next_step": "manual_review",
+                            },
+                            "transcript_path": "videos/pending/transcript.original.txt",
+                            "transcript_language": "en",
+                            "transcript_source": "manual",
+                        },
+                    ],
+                    "failed_videos": [],
+                    "needs_review_videos": [],
+                },
+            )
+
+            def fake_retry(transcript_text: str, video_title: str, settings: dict, playlist_name: str, **kwargs):
+                self.assertTrue(kwargs["force_retry"])
+                return "forced summary", {"attempt_count": 6, "last_error": None}
+
+            with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                with mock.patch.object(knowledge_digest_module, "summarize_transcript_with_retries", side_effect=fake_retry):
+                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
+                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                            with mock.patch.object(knowledge_digest_module, "save_state"):
+                                manifest = retry_pending_summaries(
+                                    config,
+                                    target_date,
+                                    video_id="pending",
+                                    force_summary_retry=True,
+                                )
+
+            self.assertEqual(manifest["pending_summary_count"], 0)
+            self.assertEqual(manifest["summary_ready_count"], 1)
+
+    def test_adopt_summary_file_marks_pending_video_ready_and_rebuilds_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = make_test_config(str(root / "runs"))
+            target_date = date(2026, 6, 10)
+            run_dir = config.output_root_path / target_date.isoformat()
+            video_dir = run_dir / "videos" / "pending"
+            video_dir.mkdir(parents=True)
+            (video_dir / "transcript.original.txt").write_text("pending transcript", encoding="utf-8")
+            summary_file = root / "manual-summary.md"
+            summary_file.write_text("# Manual Summary\n\n- done", encoding="utf-8")
+            _write_json(
+                run_dir / "manifest.json",
+                {
+                    "browser_mode": "managed",
+                    "run_mode": "full",
+                    "incremental_stats": {},
+                    "processed_videos": [
+                        {
+                            "id": "pending",
+                            "title": "Pending",
+                            "url": "https://www.youtube.com/watch?v=pending",
+                            "channel_name": "Channel",
+                            "processing_status": "pending_summary",
+                            "summary_error": "SSL EOF",
+                            "summary_retry": {
+                                "attempt_count": 5,
+                                "last_error": "SSL EOF",
+                                "stopped_reason": "max_attempts",
+                            },
+                            "transcript_path": "videos/pending/transcript.original.txt",
+                            "transcript_language": "en",
+                            "transcript_source": "manual",
+                        },
+                    ],
+                    "failed_videos": [],
+                    "needs_review_videos": [],
+                },
+            )
+
+            with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                with mock.patch.object(knowledge_digest_module, "save_state"):
+                    manifest = adopt_summary_for_video(config, target_date, "pending", summary_file)
+
+            adopted = manifest["processed_videos"][0]
+            self.assertEqual(manifest["pending_summary_count"], 0)
+            self.assertEqual(manifest["summary_ready_count"], 1)
+            self.assertEqual(adopted["processing_status"], "summary_ready")
+            self.assertEqual(adopted["summary_source"], "manual")
+            self.assertIsNone(adopted["summary_error"])
+            self.assertEqual((video_dir / "summary.zh-CN.md").read_text(encoding="utf-8"), "# Manual Summary\n\n- done\n")
+            overview = (run_dir / "daily-overview.zh-CN.md").read_text(encoding="utf-8")
+            self.assertIn("- 待补总结视频数: 0", overview)
 
 
 class GenerateMarkdownTests(unittest.TestCase):
@@ -587,6 +785,68 @@ class YoutubeApiPaginationToleranceTests(unittest.TestCase):
                     knowledge_digest_module.fetch_playlist_entries_via_youtube_api(config)
 
 
+class RunKnowledgeDigestRecoveryTests(unittest.TestCase):
+    def test_transient_playlist_fetch_failure_recovers_existing_pending_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = make_test_config(str(root / "runs"))
+            target_date = date(2026, 6, 10)
+            run_dir = config.output_root_path / target_date.isoformat()
+            run_dir.mkdir(parents=True)
+            _write_json(
+                run_dir / "manifest.json",
+                {
+                    "pending_summary_count": 1,
+                    "processed_videos": [
+                        {"id": "pending", "processing_status": "pending_summary"},
+                    ],
+                },
+            )
+
+            with mock.patch.object(knowledge_digest_module, "load_config", return_value=config):
+                with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                    with mock.patch.object(
+                        knowledge_digest_module,
+                        "fetch_playlist_entries",
+                        side_effect=knowledge_digest_module.DigestError(
+                            "YouTube API request failed: [SSL: UNEXPECTED_EOF_WHILE_READING]"
+                        ),
+                    ):
+                        with mock.patch.object(
+                            knowledge_digest_module,
+                            "retry_pending_summaries",
+                            return_value={"completion_status": "partial"},
+                        ) as mocked_retry:
+                            manifest = knowledge_digest_module.run_knowledge_digest(
+                                target_date,
+                                force_summary_retry=True,
+                            )
+
+            self.assertEqual(manifest["completion_status"], "partial")
+            mocked_retry.assert_called_once()
+            self.assertTrue(mocked_retry.call_args.kwargs["force_summary_retry"])
+
+    def test_transient_playlist_fetch_failure_without_manifest_still_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = make_test_config(str(Path(tmpdir) / "runs"))
+            target_date = date(2026, 6, 10)
+
+            with mock.patch.object(knowledge_digest_module, "load_config", return_value=config):
+                with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                    with mock.patch.object(
+                        knowledge_digest_module,
+                        "fetch_playlist_entries",
+                        side_effect=knowledge_digest_module.DigestError(
+                            "YouTube API request failed: [SSL: UNEXPECTED_EOF_WHILE_READING]"
+                        ),
+                    ):
+                        with mock.patch.object(knowledge_digest_module, "retry_pending_summaries") as mocked_retry:
+                            with self.assertRaises(knowledge_digest_module.DigestError):
+                                knowledge_digest_module.run_knowledge_digest(target_date)
+
+            mocked_retry.assert_not_called()
+
+
 class CliTests(unittest.TestCase):
     def test_cli_passes_full_reprocess_flag(self) -> None:
         with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
@@ -604,6 +864,33 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(mocked_run.call_args.kwargs["video_id"], "abc123xyz89")
         self.assertFalse(mocked_run.call_args.kwargs["full_reprocess"])
+
+    def test_cli_passes_force_summary_retry_and_adopt_summary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary_path = Path(tmpdir) / "summary.md"
+            summary_path.write_text("# summary", encoding="utf-8")
+            with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
+                with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "run_knowledge_digest.py",
+                            "--target-date",
+                            "2026-03-21",
+                            "--retry-summaries",
+                            "--video-id",
+                            "abc123xyz89",
+                            "--force-summary-retry",
+                            "--adopt-summary-file",
+                            str(summary_path),
+                        ],
+                    ):
+                        exit_code = cli_module.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(mocked_run.call_args.kwargs["force_summary_retry"])
+        self.assertEqual(mocked_run.call_args.kwargs["adopt_summary_file"], summary_path)
 
     def test_cli_content_run_triggers_auto_sync_for_target_date(self) -> None:
         with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}):

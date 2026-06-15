@@ -2,6 +2,7 @@
 """Shared helpers for the local YouTube knowledge digest workflow."""
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -62,6 +63,19 @@ NON_RETRYABLE_SUMMARY_ERROR_MARKERS = (
     "invalid request",
     "configuration",
     "parameter",
+)
+TRANSIENT_NETWORK_ERROR_MARKERS = (
+    "unexpected_eof_while_reading",
+    "eof occurred in violation",
+    "incompleteread",
+    "incomplete read",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection aborted",
+    "remote end closed",
+    "remote disconnected",
+    "temporarily unavailable",
 )
 DEVTOOLS_ACTIVE_PORT_CANDIDATES = [
     Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort",
@@ -1566,6 +1580,15 @@ def _post_json(url: str, payload: dict[str, Any], settings: dict[str, str]) -> d
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise DigestError(f"OpenAI request failed: {detail}") from exc
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        socket.timeout,
+        ssl.SSLError,
+        http.client.IncompleteRead,
+        ConnectionError,
+    ) as exc:
+        raise DigestError(f"OpenAI request failed: {exc}") from exc
     return json.loads(body)
 
 
@@ -1694,6 +1717,22 @@ def _is_non_retryable_summary_error(exc: Exception) -> bool:
     return any(marker in message for marker in NON_RETRYABLE_SUMMARY_ERROR_MARKERS)
 
 
+def is_transient_network_error(exc: Exception | str) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout, http.client.IncompleteRead, ConnectionError)):
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in TRANSIENT_NETWORK_ERROR_MARKERS)
+
+
+def _append_summary_retry_history(retry_state: dict[str, Any]) -> dict[str, Any]:
+    if not retry_state:
+        return retry_state
+    history = list(retry_state.get("history") or [])
+    history.append({key: value for key, value in retry_state.items() if key != "history"})
+    retry_state["history"] = history
+    return retry_state
+
+
 def summarize_transcript_with_retries(
     transcript_text: str,
     video_title: str,
@@ -1703,6 +1742,7 @@ def summarize_transcript_with_retries(
     existing_retry: dict[str, Any] | None = None,
     max_attempts: int = SUMMARY_MAX_ATTEMPTS,
     run_attempt_limit: int = SUMMARY_INLINE_ATTEMPTS,
+    force_retry: bool = False,
     clock: Callable[[], datetime] = beijing_now,
     sleep_fn: Callable[[int], None] = time.sleep,
     summarize_fn: Callable[[str, str, dict[str, str], str], str] = summarize_transcript,
@@ -1712,7 +1752,12 @@ def summarize_transcript_with_retries(
     first_failed_at = _parse_retry_datetime(retry_state.get("first_failed_at"))
     now = clock()
 
-    if attempt_count >= max_attempts:
+    if force_retry:
+        retry_state = _append_summary_retry_history(retry_state)
+        retry_state.pop("next_retry_after", None)
+        retry_state.pop("stopped_reason", None)
+        retry_state.pop("next_step", None)
+    elif attempt_count >= max_attempts:
         retry_state.update(
             {
                 "attempt_count": attempt_count,
@@ -1731,18 +1776,24 @@ def summarize_transcript_with_retries(
         )
         return None, retry_state
 
-    attempts_this_run = min(max_attempts - attempt_count, run_attempt_limit)
+    remaining_attempts = max_attempts - attempt_count
+    if force_retry:
+        remaining_attempts = max(remaining_attempts, 1)
+    attempts_this_run = min(remaining_attempts, run_attempt_limit)
     for run_attempt_index in range(attempts_this_run):
         if run_attempt_index > 0:
             sleep_fn(_summary_retry_delay(attempt_count))
         try:
             summary_text = summarize_fn(transcript_text, video_title, settings, playlist_name)
             attempt_count += 1
-            return summary_text, {
+            success_retry = {
                 "attempt_count": attempt_count,
                 "last_success_at": clock().isoformat(),
                 "last_error": None,
             }
+            if retry_state.get("history"):
+                success_retry["history"] = retry_state["history"]
+            return summary_text, success_retry
         except Exception as exc:  # noqa: BLE001
             attempt_count += 1
             now = clock()
@@ -1901,6 +1952,7 @@ def write_video_outputs(
     summary_text: str | None,
     summary_status: str,
     summary_error: str | None = None,
+    prebuilt_summary_markdown: bool = False,
 ) -> dict[str, Any]:
     video_dir = run_dir / "videos" / video["id"]
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -1911,7 +1963,11 @@ def write_video_outputs(
     summary_path = video_dir / "summary.zh-CN.md"
     legacy_report = video_dir / "report.md"
     if summary_text:
-        summary_markdown = build_video_summary_markdown(video, summary_text, "transcript.original.txt")
+        summary_markdown = (
+            summary_text.strip() + "\n"
+            if prebuilt_summary_markdown
+            else build_video_summary_markdown(video, summary_text, "transcript.original.txt")
+        )
         summary_path.write_text(summary_markdown, encoding="utf-8")
         legacy_report.write_text(summary_markdown, encoding="utf-8")
     else:
@@ -1937,6 +1993,7 @@ def write_video_outputs(
         "processed_at": beijing_now().isoformat(),
         "processing_status": summary_status,
         "summary_error": summary_error,
+        "summary_source": video.get("summary_source"),
         "summary_retry": video.get("summary_retry", {}),
         "processing_metrics": video.get("processing_metrics", {}),
         "transcription_details": transcript.details,
@@ -1954,6 +2011,7 @@ def write_video_outputs(
         "transcript_language": transcript.language,
         "processing_status": summary_status,
         "summary_error": summary_error,
+        "summary_source": video.get("summary_source"),
         "summary_retry": video.get("summary_retry", {}),
         "processing_metrics": video.get("processing_metrics", {}),
         "transcription_details": transcript.details,
@@ -1995,6 +2053,12 @@ def _summary_ready_videos(processed_videos: list[dict[str, Any]]) -> list[dict[s
 
 def _pending_summary_videos(processed_videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [item for item in processed_videos if item.get("processing_status") == "pending_summary"]
+
+
+def _manifest_has_pending_summaries(manifest: dict[str, Any]) -> bool:
+    return int(manifest.get("pending_summary_count") or 0) > 0 or bool(
+        _pending_summary_videos(manifest.get("processed_videos", []))
+    )
 
 
 def is_manifest_complete(manifest: dict[str, Any]) -> bool:
@@ -2047,6 +2111,18 @@ def _build_manifest(
     return manifest
 
 
+def _fallback_daily_overview_summary(processed_videos: list[dict[str, Any]]) -> str:
+    summary_ready_videos = _summary_ready_videos(processed_videos)
+    if summary_ready_videos:
+        return "\n".join(
+            f"- {item['title']}: {item.get('summary_text', '')[:120]}..."
+            for item in summary_ready_videos
+        )
+    if processed_videos:
+        return "今天的视频 transcript 已完成，但有部分或全部视频等待补跑总结。"
+    return "今天没有匹配到成功处理的视频。"
+
+
 def _build_daily_overview_text(
     target_date: date,
     config: DigestConfig,
@@ -2062,10 +2138,7 @@ def _build_daily_overview_text(
         try:
             overview_summary = summarize_daily_overview(target_date, summary_ready_videos, settings, config.playlist_name)
         except DigestError:
-            overview_summary = "\n".join(
-                f"- {item['title']}: {item['summary_text'][:120]}..."
-                for item in summary_ready_videos
-            )
+            overview_summary = _fallback_daily_overview_summary(processed_videos)
     elif processed_videos:
         overview_summary = "今天的视频 transcript 已完成，但有部分或全部视频等待补跑总结。"
     else:
@@ -2081,7 +2154,13 @@ def _build_daily_overview_text(
     )
 
 
-def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: str | None = None) -> dict[str, Any]:
+def retry_pending_summaries(
+    config: DigestConfig,
+    target_date: date,
+    video_id: str | None = None,
+    *,
+    force_summary_retry: bool = False,
+) -> dict[str, Any]:
     run_dir = config.output_root_path / target_date.isoformat()
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.exists():
@@ -2137,6 +2216,7 @@ def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: s
             existing_retry=merged.get("summary_retry") or {},
             max_attempts=SUMMARY_MAX_ATTEMPTS,
             run_attempt_limit=1,
+            force_retry=force_summary_retry,
         )
         merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
         merged["summary_retry"] = summary_retry
@@ -2193,6 +2273,109 @@ def retry_pending_summaries(config: DigestConfig, target_date: date, video_id: s
     return manifest
 
 
+def adopt_summary_for_video(
+    config: DigestConfig,
+    target_date: date,
+    video_id: str,
+    summary_file: Path,
+) -> dict[str, Any]:
+    run_dir = config.output_root_path / target_date.isoformat()
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise DigestError(f"No existing run manifest found for {target_date.isoformat()}: {manifest_path}")
+    if not summary_file.exists():
+        raise DigestError(f"Manual summary file does not exist: {summary_file}")
+
+    manual_summary = summary_file.read_text(encoding="utf-8").strip()
+    if not manual_summary:
+        raise DigestError(f"Manual summary file is empty: {summary_file}")
+
+    manifest = _read_json(manifest_path, {})
+    processed_videos = manifest.get("processed_videos", [])
+    failed_videos = manifest.get("failed_videos", [])
+    needs_review = manifest.get("needs_review_videos", [])
+
+    updated_processed: list[dict[str, Any]] = []
+    adopted = False
+    for video in processed_videos:
+        if video.get("id") != video_id:
+            updated_processed.append(video)
+            continue
+
+        transcript_path = run_dir / str(video.get("transcript_path") or "")
+        if not transcript_path.exists():
+            raise DigestError(f"Missing transcript file for {video_id}: {transcript_path}")
+
+        retry_state = dict(video.get("summary_retry") or {})
+        if retry_state:
+            retry_state = _append_summary_retry_history(retry_state)
+        retry_state.update(
+            {
+                "manual_adopted_at": beijing_now().isoformat(),
+                "last_error": None,
+                "stopped_reason": None,
+                "next_step": None,
+            }
+        )
+        retry_state.pop("next_retry_after", None)
+
+        transcript = TranscriptResult(
+            text=transcript_path.read_text(encoding="utf-8"),
+            language=video.get("transcript_language", "unknown"),
+            source=video.get("transcript_source", "unknown"),
+            segments=[],
+            details=video.get("transcription_details", {}),
+        )
+        merged = {
+            **video,
+            "summary_source": "manual",
+            "summary_retry": retry_state,
+        }
+        updated_processed.append(
+            write_video_outputs(
+                run_dir,
+                merged,
+                transcript,
+                manual_summary,
+                summary_status="summary_ready",
+                summary_error=None,
+                prebuilt_summary_markdown=True,
+            )
+        )
+        adopted = True
+
+    if not adopted:
+        raise DigestError(f"Video {video_id} was not found in manifest for {target_date.isoformat()}")
+
+    manifest = _build_manifest(
+        target_date,
+        config,
+        manifest.get("browser_mode", "managed"),
+        updated_processed,
+        failed_videos,
+        needs_review,
+        run_mode=manifest.get("run_mode", "full"),
+        incremental_stats=manifest.get("incremental_stats"),
+    )
+    manifest["adopted_summary_count"] = 1
+    _write_json(manifest_path, manifest)
+
+    reused_summary_ready_count = int(manifest["incremental_stats"].get("skipped_summary_ready_count", 0))
+    daily_overview = build_daily_overview_markdown(
+        target_date,
+        config.playlist_name,
+        updated_processed,
+        failed_videos,
+        needs_review,
+        _fallback_daily_overview_summary(updated_processed),
+        reused_summary_ready_count=reused_summary_ready_count,
+    )
+    (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
+    save_state(update_state(load_state(), target_date, updated_processed))
+    _write_json(manifest_path, manifest)
+    return manifest
+
+
 def run_knowledge_digest(
     target_date: date,
     playlist_url: str | None = None,
@@ -2204,6 +2387,8 @@ def run_knowledge_digest(
     allow_fallback_first_seen: bool = False,
     full_reprocess: bool = False,
     video_id: str | None = None,
+    force_summary_retry: bool = False,
+    adopt_summary_file: Path | None = None,
 ) -> dict[str, Any]:
     config = load_config(playlist_url=playlist_url)
     ensure_output_dirs(config)
@@ -2213,8 +2398,17 @@ def run_knowledge_digest(
         return seed_automation_profile_from_current(config)
     if bootstrap_login:
         return bootstrap_managed_chrome_login(config)
+    if adopt_summary_file is not None:
+        if not video_id:
+            raise DigestError("--adopt-summary-file requires --video-id.")
+        return adopt_summary_for_video(config, target_date, video_id, adopt_summary_file)
     if retry_summaries:
-        return retry_pending_summaries(config, target_date, video_id=video_id)
+        return retry_pending_summaries(
+            config,
+            target_date,
+            video_id=video_id,
+            force_summary_retry=force_summary_retry,
+        )
 
     run_dir = config.output_root_path / target_date.isoformat()
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -2234,7 +2428,20 @@ def run_knowledge_digest(
             needs_review: list[dict[str, Any]] = []
             incremental_stats = _default_incremental_stats(selected_count=1, to_process_count=1)
         else:
-            fetch_result = fetch_playlist_entries(config, attach_current_chrome=attach_current_chrome, interactive_login=False)
+            try:
+                fetch_result = fetch_playlist_entries(config, attach_current_chrome=attach_current_chrome, interactive_login=False)
+            except DigestError as exc:
+                if (
+                    not full_reprocess
+                    and is_transient_network_error(exc)
+                    and _manifest_has_pending_summaries(existing_manifest)
+                ):
+                    return retry_pending_summaries(
+                        config,
+                        target_date,
+                        force_summary_retry=force_summary_retry,
+                    )
+                raise
             browser_mode = fetch_result.browser_mode
             yt_dlp_cookies_path = fetch_result.cookie_file
             selected_entries, needs_review = select_entries_for_processing(
