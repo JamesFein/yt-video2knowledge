@@ -107,6 +107,48 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_sync_converts_page_content_to_simplified_chinese(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            day_dir = root / "data" / "runs" / "2026-06-19"
+            day_dir.mkdir(parents=True)
+            traditional_title = (
+                "AI時代別只會下指令！矽谷前機器學習副總揭秘「3大管理盲點」，"
+                "讓你告別用舊方法學新工具"
+            )
+            (day_dir / "daily-overview.zh-CN.md").write_text(
+                f"# Daily\n\n日期 / 2026-06-19 / {traditional_title}",
+                encoding="utf-8",
+            )
+            write_video(
+                day_dir,
+                "ready",
+                title=traditional_title,
+                summary="## 視頻資訊\n\n這個臺灣資料很重要。",
+            )
+            metadata_path = day_dir / "videos" / "ready" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["channel_name"] = "領導影響力學院"
+            write_json(metadata_path, metadata)
+
+            sync_knowledge_site(settings)
+
+            conn = connect_db(settings.db_path)
+            try:
+                day = conn.execute("SELECT * FROM days WHERE day_date = '2026-06-19'").fetchone()
+                video = conn.execute("SELECT * FROM videos WHERE video_id = 'ready'").fetchone()
+
+                self.assertIn("AI时代别只会下指令", day["daily_summary_markdown"])
+                self.assertNotIn("時代", day["daily_summary_markdown"])
+                self.assertIn("机器学习副总", video["title"])
+                self.assertNotIn("機器學習副總", video["title"])
+                self.assertEqual(video["channel_name"], "领导影响力学院")
+                self.assertIn("## 视频资讯", video["summary_markdown"])
+                self.assertIn("这个台湾资料很重要。", video["summary_markdown"])
+            finally:
+                conn.close()
+
     def test_empty_days_and_duplicate_videos_are_imported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -334,4 +376,3 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

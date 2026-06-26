@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opencc import OpenCC
+
 from .config import Settings
 from .database import connect_db, initialize_database, utc_now
 
@@ -17,6 +19,7 @@ READY_STATUS = "summary_ready"
 PENDING_STATUS = "pending_summary"
 FAILED_STATUS = "transcript_failed"
 THUMBNAIL_EXTENSIONS = (".webp", ".jpg", ".jpeg", ".png")
+_SIMPLIFIED_CHINESE_CONVERTER = OpenCC("t2s")
 
 
 @dataclass(frozen=True)
@@ -141,7 +144,7 @@ def _sync_day(
     }
     failed_ids = set(manifest_failures)
 
-    overview = _read_text(day_dir / "daily-overview.zh-CN.md")
+    overview = _to_simplified_chinese(_read_text(day_dir / "daily-overview.zh-CN.md"))
     conn.execute(
         """
         INSERT INTO days (day_date, daily_summary_markdown, synced_at)
@@ -294,13 +297,15 @@ def _upsert_video(
         """,
         (
             video_id,
-            str(record.get("title") or video_id),
-            str(record.get("channel_name") or record.get("uploader") or record.get("channel") or ""),
+            _to_simplified_chinese(str(record.get("title") or video_id)),
+            _to_simplified_chinese(
+                str(record.get("channel_name") or record.get("uploader") or record.get("channel") or "")
+            ),
             str(record.get("url") or record.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"),
             duration_seconds,
             duration_label,
             _normalize_upload_date(record.get("upload_date")),
-            _read_text(summary_path),
+            _to_simplified_chinese(_read_text(summary_path)),
             transcript_path,
             thumbnail_path,
             now,
@@ -403,3 +408,6 @@ def _read_text(path: Path) -> str:
         return ""
     return path.read_text(encoding="utf-8")
 
+
+def _to_simplified_chinese(text: str) -> str:
+    return _SIMPLIFIED_CHINESE_CONVERTER.convert(text)

@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from opencc import OpenCC
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 STATE_DIR = DATA_DIR / "state"
@@ -52,6 +54,7 @@ SUMMARY_INLINE_ATTEMPTS = 4
 SUMMARY_MAX_ATTEMPTS = 5
 SUMMARY_RETRY_WINDOW = timedelta(hours=24)
 SUMMARY_RETRY_BACKOFF_SECONDS = (30, 120, 300)
+_SIMPLIFIED_CHINESE_CONVERTER = OpenCC("t2s")
 NON_RETRYABLE_SUMMARY_ERROR_MARKERS = (
     "missing runtime configuration",
     "invalid api key",
@@ -77,6 +80,11 @@ TRANSIENT_NETWORK_ERROR_MARKERS = (
     "remote disconnected",
     "temporarily unavailable",
 )
+YT_DLP_MEDIA_FORBIDDEN_MARKERS = (
+    "http error 403",
+    "unable to download video data",
+)
+YT_DLP_AUDIO_FALLBACK_FORMATS = ("251", "140", "250", "249", "bestaudio/best")
 DEVTOOLS_ACTIVE_PORT_CANDIDATES = [
     Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort",
     Path.home() / "Library/Application Support/Google/Chrome/Default/DevToolsActivePort",
@@ -317,6 +325,46 @@ def _yt_dlp_base(browser: str | None = None, cookies_path: Path | None = None) -
     return cmd
 
 
+def _is_yt_dlp_media_forbidden_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in YT_DLP_MEDIA_FORBIDDEN_MARKERS)
+
+
+def _cleanup_partial_audio_downloads(output_dir: Path) -> None:
+    for path in output_dir.glob("source_audio.*"):
+        if path.suffix in {".part", ".ytdl"}:
+            path.unlink(missing_ok=True)
+
+
+def _download_audio_format(
+    video_id: str,
+    output_dir: Path,
+    format_selector: str,
+    browser: str | None = None,
+    cookies_path: Path | None = None,
+) -> Path:
+    template = output_dir / "source_audio.%(ext)s"
+    cmd = _yt_dlp_base(browser, cookies_path)
+    cmd.extend(
+        [
+            "-f",
+            format_selector,
+            "-o",
+            str(template),
+            f"https://www.youtube.com/watch?v={video_id}",
+        ]
+    )
+    _run_command(cmd, timeout=600)
+    candidates = [
+        path
+        for path in output_dir.glob("source_audio.*")
+        if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".json")
+    ]
+    if not candidates:
+        raise ExternalCommandError(f"No audio file downloaded for {video_id} with format {format_selector}")
+    return candidates[0]
+
+
 def fetch_video_info(video_id: str, browser: str | None = None, cookies_path: Path | None = None) -> dict[str, Any]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     attempts: list[tuple[str | None, Path | None]] = []
@@ -449,26 +497,42 @@ def download_audio(
     cookies_path: Path | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    template = output_dir / "source_audio.%(ext)s"
-    cmd = _yt_dlp_base(browser, cookies_path)
-    cmd.extend(
-        [
-            "-f",
-            "bestaudio/best",
-            "-o",
-            str(template),
-            f"https://www.youtube.com/watch?v={video_id}",
-        ]
-    )
-    _run_command(cmd, timeout=600)
-    candidates = [
-        path
-        for path in output_dir.glob("source_audio.*")
-        if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".json")
-    ]
-    if not candidates:
-        raise ExternalCommandError(f"No audio file downloaded for {video_id}")
-    return candidates[0]
+    attempts: list[tuple[str, str]] = []
+
+    credential_modes: list[tuple[str | None, Path | None]] = []
+    if cookies_path:
+        credential_modes.append((None, cookies_path))
+    if browser:
+        credential_modes.append((browser, None))
+    credential_modes.append((None, None))
+
+    tried_keys: set[tuple[str | None, str | None]] = set()
+    deduped_modes: list[tuple[str | None, Path | None]] = []
+    for current_browser, current_cookies in credential_modes:
+        key = (current_browser, str(current_cookies) if current_cookies else None)
+        if key in tried_keys:
+            continue
+        tried_keys.add(key)
+        deduped_modes.append((current_browser, current_cookies))
+
+    for current_browser, current_cookies in deduped_modes:
+        _cleanup_partial_audio_downloads(output_dir)
+        try:
+            return _download_audio_format(video_id, output_dir, "bestaudio/best", current_browser, current_cookies)
+        except DigestError as exc:
+            attempts.append(("bestaudio/best", str(exc)))
+            if not _is_yt_dlp_media_forbidden_error(exc):
+                raise
+
+        for format_selector in YT_DLP_AUDIO_FALLBACK_FORMATS:
+            _cleanup_partial_audio_downloads(output_dir)
+            try:
+                return _download_audio_format(video_id, output_dir, format_selector, current_browser, current_cookies)
+            except DigestError as exc:
+                attempts.append((format_selector, str(exc)))
+
+    attempt_lines = "\n".join(f"- {format_selector}: {error}" for format_selector, error in attempts)
+    raise ExternalCommandError(f"Unable to download audio for {video_id} after yt-dlp fallback attempts:\n{attempt_lines}")
 
 
 def convert_audio_to_wav(source_audio: Path, wav_path: Path) -> Path:
@@ -1623,6 +1687,10 @@ def _chunk_text(text: str, max_chars: int = 12000) -> list[str]:
     return chunks or [text]
 
 
+def _to_simplified_chinese(text: str) -> str:
+    return _SIMPLIFIED_CHINESE_CONVERTER.convert(text)
+
+
 def summarize_transcript(
     transcript_text: str,
     video_title: str,
@@ -1631,13 +1699,13 @@ def summarize_transcript(
 ) -> str:
     chunks = _chunk_text(transcript_text)
     if len(chunks) == 1:
-        return _openai_request(
+        summary = _openai_request(
             [
                 {
                     "role": "system",
                     "content": (
                         "你是一个严谨的中文知识整理助手。请把视频 transcript 整理成结构化中文 Markdown，"
-                        "覆盖：核心结论、关键论点、可执行启发、值得回看的时间点。"
+                        "覆盖：核心结论、关键论点、可执行启发。全程使用简体中文，不要添加未列出的额外章节。"
                     ),
                 },
                 {
@@ -1651,32 +1719,32 @@ def summarize_transcript(
             ],
             settings,
         )
+        return _to_simplified_chinese(summary)
 
     chunk_summaries = []
     for index, chunk in enumerate(chunks, start=1):
-        chunk_summaries.append(
-            _openai_request(
-                [
-                    {
-                        "role": "system",
-                        "content": "请将 transcript 分段整理成精炼中文要点，保留关键信息，不要编造内容。",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"视频标题：{video_title}\n第 {index}/{len(chunks)} 段 transcript：\n\n{chunk}",
-                    },
-                ],
-                settings,
-                max_tokens=900,
-            )
+        chunk_summary = _openai_request(
+            [
+                {
+                    "role": "system",
+                    "content": "请将 transcript 分段整理成精炼简体中文要点，保留关键信息，不要编造内容。",
+                },
+                {
+                    "role": "user",
+                    "content": f"视频标题：{video_title}\n第 {index}/{len(chunks)} 段 transcript：\n\n{chunk}",
+                },
+            ],
+            settings,
+            max_tokens=900,
         )
-    return _openai_request(
+        chunk_summaries.append(_to_simplified_chinese(chunk_summary))
+    final_summary = _openai_request(
         [
             {
                 "role": "system",
                 "content": (
                     "你是一个严谨的中文知识整理助手。请把多段摘要合成为最终中文 Markdown，"
-                    "结构包含：一句话总结、关键观点、可执行启发、推荐回看片段。"
+                    "结构只包含：一句话总结、关键观点、可执行启发。全程使用简体中文，不要添加未列出的额外章节。"
                 ),
             },
             {
@@ -1690,6 +1758,7 @@ def summarize_transcript(
         ],
         settings,
     )
+    return _to_simplified_chinese(final_summary)
 
 
 def _parse_retry_datetime(value: Any) -> datetime | None:

@@ -58,6 +58,18 @@ def write_ready_video(root: Path) -> Settings:
 
 
 class KnowledgeSiteApiTests(unittest.TestCase):
+    def test_site_script_keeps_native_scroll_restoration(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "knowledge_site" / "static" / "site.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('window.history.scrollRestoration = "auto";', script)
+        self.assertIn("function shouldSaveBeforeNavigation", script)
+        self.assertIn('"click"', script)
+        self.assertIn("saveScrollPosition();", script)
+        self.assertIn("preservePositiveOnZero", script)
+        self.assertNotIn('scrollRestoration = "manual"', script)
+
     def test_session_cookie_can_share_fixed_domain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -109,13 +121,18 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 303)
             self.assertEqual(response.headers["location"], "/")
             self.assertEqual(client.get("/").status_code, 200)
+            index_page = client.get("/")
+            self.assertEqual(index_page.text.count('/static/site.js?v=20260619-link-scroll-v2'), 1)
             day_page = client.get("/days/2026-06-01")
+            self.assertEqual(day_page.text.count('/static/site.js?v=20260619-link-scroll-v2'), 1)
             self.assertIn('<details class="daily-overview">', day_page.text)
             self.assertIn("<summary>knowledge Daily Overview</summary>", day_page.text)
             self.assertNotIn('<details class="daily-overview" open', day_page.text)
             self.assertIn('<a class="return-pill" href="/">← 返回日期列表</a>', day_page.text)
             self.assertIn('href="/videos/ready?day=2026-06-01"', day_page.text)
             video_page = client.get("/videos/ready")
+            self.assertEqual(video_page.text.count('/static/site.js?v=20260619-link-scroll-v2'), 1)
+            self.assertNotIn('<script src="/static/site.js"></script>', video_page.text)
             self.assertIn("Ready Video", video_page.text)
             self.assertIn('<a href="/days/2026-06-01">2026-06-01</a>', video_page.text)
             self.assertIn(

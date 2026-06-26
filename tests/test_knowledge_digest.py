@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 import json
+import subprocess
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -438,6 +439,111 @@ class SummaryRetryTests(unittest.TestCase):
         self.assertEqual(retry_state["attempt_count"], 4)
         self.assertIsNone(retry_state["last_error"])
         self.assertEqual(retry_state["history"][0]["stopped_reason"], "max_attempts")
+
+
+class DownloadAudioTests(unittest.TestCase):
+    def test_download_audio_success_does_not_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            calls = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                calls.append(cmd)
+                (output_dir / "source_audio.webm").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.object(knowledge_digest_module, "_run_command", side_effect=fake_run_command):
+                result = knowledge_digest_module.download_audio("video123", output_dir, browser="chrome")
+
+        self.assertEqual(result.name, "source_audio.webm")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][calls[0].index("-f") + 1], "bestaudio/best")
+
+    def test_download_audio_retries_403_with_explicit_formats_and_cleans_partials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            formats = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                format_selector = cmd[cmd.index("-f") + 1]
+                formats.append(format_selector)
+                if len(formats) > 1:
+                    self.assertFalse(list(output_dir.glob("*.part")))
+                if format_selector in {"bestaudio/best", "251"}:
+                    (output_dir / "source_audio.webm.part").write_text("partial", encoding="utf-8")
+                    raise knowledge_digest_module.ExternalCommandError(
+                        "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+                    )
+                (output_dir / "source_audio.m4a").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.object(knowledge_digest_module, "_run_command", side_effect=fake_run_command):
+                result = knowledge_digest_module.download_audio("video123", output_dir, browser="chrome")
+
+        self.assertEqual(result.name, "source_audio.m4a")
+        self.assertEqual(formats, ["bestaudio/best", "251", "140"])
+
+    def test_download_audio_reports_all_fallback_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                raise knowledge_digest_module.ExternalCommandError("HTTP Error 403: Forbidden")
+
+            with mock.patch.object(knowledge_digest_module, "_run_command", side_effect=fake_run_command):
+                with self.assertRaises(knowledge_digest_module.ExternalCommandError) as raised:
+                    knowledge_digest_module.download_audio("video123", output_dir, browser="chrome")
+
+        message = str(raised.exception)
+        self.assertIn("Unable to download audio for video123", message)
+        self.assertIn("bestaudio/best", message)
+        self.assertIn("251", message)
+        self.assertIn("140", message)
+        self.assertIn("250", message)
+        self.assertIn("249", message)
+
+
+class SummarizeTranscriptTests(unittest.TestCase):
+    def test_single_chunk_prompt_omits_rewatch_and_returns_simplified_chinese(self) -> None:
+        calls = []
+
+        def fake_openai_request(messages, settings, max_tokens=1200):
+            calls.append(messages)
+            return "# 總結\n\n這個臺灣資料很重要。"
+
+        with mock.patch.object(knowledge_digest_module, "_openai_request", side_effect=fake_openai_request):
+            summary = knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
+
+        self.assertEqual(summary, "# 总结\n\n这个台湾资料很重要。")
+        prompt_text = "\n".join(message["content"] for message in calls[0])
+        self.assertIn("简体中文", prompt_text)
+        self.assertNotIn("回看", prompt_text)
+        self.assertNotIn("回看片段", prompt_text)
+        self.assertNotIn("值得回看的时间点", prompt_text)
+
+    def test_multi_chunk_summaries_and_final_output_are_simplified_chinese(self) -> None:
+        calls = []
+        responses = [
+            "第一段總結：這個臺灣資料。",
+            "第二段總結：關鍵啟發。",
+            "# 最終\n\n這個臺灣資料有關鍵啟發。",
+        ]
+
+        def fake_openai_request(messages, settings, max_tokens=1200):
+            calls.append(messages)
+            return responses[len(calls) - 1]
+
+        with mock.patch.object(knowledge_digest_module, "_chunk_text", return_value=["chunk one", "chunk two"]):
+            with mock.patch.object(knowledge_digest_module, "_openai_request", side_effect=fake_openai_request):
+                summary = knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
+
+        self.assertEqual(summary, "# 最终\n\n这个台湾资料有关键启发。")
+        final_prompt = calls[2][1]["content"]
+        all_prompts = "\n".join(message["content"] for messages in calls for message in messages)
+        self.assertIn("第一段总结：这个台湾资料。", final_prompt)
+        self.assertIn("第二段总结：关键启发。", final_prompt)
+        self.assertIn("简体中文", all_prompts)
+        self.assertNotIn("回看", all_prompts)
 
 
 class ManifestCompletionTests(unittest.TestCase):
