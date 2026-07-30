@@ -297,7 +297,7 @@ def _upsert_video(
         """,
         (
             video_id,
-            _to_simplified_chinese(str(record.get("title") or video_id)),
+            _to_simplified_chinese(str(record.get("display_title") or record.get("title") or video_id)),
             _to_simplified_chinese(
                 str(record.get("channel_name") or record.get("uploader") or record.get("channel") or "")
             ),

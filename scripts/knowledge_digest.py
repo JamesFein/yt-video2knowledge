@@ -1691,6 +1691,22 @@ def _to_simplified_chinese(text: str) -> str:
     return _SIMPLIFIED_CHINESE_CONVERTER.convert(text)
 
 
+def _extract_display_title(summary_text: str, fallback_title: str) -> tuple[str, str]:
+    cleaned = summary_text.strip()
+    lines = cleaned.splitlines()
+    if not lines:
+        return fallback_title, cleaned
+
+    first_line = lines[0].strip()
+    for prefix in ("中文标题：", "中文标题:"):
+        if first_line.startswith(prefix):
+            display_title = first_line.removeprefix(prefix).strip()
+            if display_title:
+                return display_title, "\n".join(lines[1:]).strip()
+
+    return fallback_title, cleaned
+
+
 def summarize_transcript(
     transcript_text: str,
     video_title: str,
@@ -1706,6 +1722,7 @@ def summarize_transcript(
                     "content": (
                         "你是一个严谨的中文知识整理助手。请把视频 transcript 整理成结构化中文 Markdown，"
                         "覆盖：核心结论、关键论点、可执行启发。全程使用简体中文，不要添加未列出的额外章节。"
+                        "第一行必须输出“中文标题：...”，标题需用简体中文概括视频主题；空一行后输出正文。"
                     ),
                 },
                 {
@@ -1745,6 +1762,7 @@ def summarize_transcript(
                 "content": (
                     "你是一个严谨的中文知识整理助手。请把多段摘要合成为最终中文 Markdown，"
                     "结构只包含：一句话总结、关键观点、可执行启发。全程使用简体中文，不要添加未列出的额外章节。"
+                    "第一行必须输出“中文标题：...”，标题需用简体中文概括视频主题；空一行后输出正文。"
                 ),
             },
             {
@@ -1938,11 +1956,17 @@ def summarize_daily_overview(
     )
 
 
-def build_video_summary_markdown(video: dict[str, Any], summary_text: str, transcript_relative_path: str) -> str:
+def build_video_summary_markdown(
+    video: dict[str, Any],
+    summary_text: str,
+    transcript_relative_path: str,
+    display_title: str | None = None,
+) -> str:
     added_text = video.get("playlist_added_text") or "未解析到"
     transcript_source = video.get("transcript_source", "unknown")
+    title = display_title or video["title"]
     return (
-        f"# {video['title']}\n\n"
+        f"# {title}\n\n"
         "## 视频信息\n"
         f"- 频道: {video.get('channel_name') or 'Unknown'}\n"
         f"- 链接: {video.get('url')}\n"
@@ -2031,11 +2055,20 @@ def write_video_outputs(
 
     summary_path = video_dir / "summary.zh-CN.md"
     legacy_report = video_dir / "report.md"
+    cleaned_summary_text = summary_text.strip() if summary_text else ""
+    display_title = str(video.get("display_title") or video["title"])
     if summary_text:
+        if not prebuilt_summary_markdown:
+            display_title, cleaned_summary_text = _extract_display_title(summary_text, video["title"])
         summary_markdown = (
             summary_text.strip() + "\n"
             if prebuilt_summary_markdown
-            else build_video_summary_markdown(video, summary_text, "transcript.original.txt")
+            else build_video_summary_markdown(
+                video,
+                cleaned_summary_text,
+                "transcript.original.txt",
+                display_title=display_title,
+            )
         )
         summary_path.write_text(summary_markdown, encoding="utf-8")
         legacy_report.write_text(summary_markdown, encoding="utf-8")
@@ -2047,6 +2080,7 @@ def write_video_outputs(
     metadata_payload = {
         "id": video["id"],
         "title": video["title"],
+        "display_title": display_title,
         "url": video["url"],
         "channel_name": video.get("channel_name"),
         "upload_date": video.get("upload_date"),
@@ -2072,7 +2106,8 @@ def write_video_outputs(
 
     return {
         **video,
-        "summary_text": summary_text.strip() if summary_text else "",
+        "display_title": display_title,
+        "summary_text": cleaned_summary_text,
         "summary_path": str(summary_path.relative_to(run_dir)) if summary_text else None,
         "transcript_path": str(transcript_path.relative_to(run_dir)),
         "metadata_path": str(metadata_path.relative_to(run_dir)),

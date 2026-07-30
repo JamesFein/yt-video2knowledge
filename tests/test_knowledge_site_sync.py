@@ -32,6 +32,7 @@ def write_video(
     *,
     status: str = "summary_ready",
     title: str | None = None,
+    display_title: str | None = None,
     summary: str | None = None,
     thumbnail_ext: str | None = ".webp",
 ) -> None:
@@ -46,6 +47,8 @@ def write_video(
         "duration": "1:02:03",
         "processing_status": status,
     }
+    if display_title is not None:
+        payload["display_title"] = display_title
     write_json(video_dir / "metadata.json", payload)
     (video_dir / "transcript.original.txt").write_text(f"Transcript {video_id}", encoding="utf-8")
     if summary is not None:
@@ -90,6 +93,7 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
                 self.assertEqual(day["daily_summary_markdown"], "# Daily\n\nOverview")
                 videos = conn.execute("SELECT * FROM videos").fetchall()
                 self.assertEqual([row["video_id"] for row in videos], ["ready"])
+                self.assertEqual(videos[0]["title"], "Video ready")
                 self.assertIn("Ready summary", videos[0]["summary_markdown"])
                 self.assertNotIn("legacy duplicate", videos[0]["summary_markdown"])
                 self.assertEqual(videos[0]["duration_seconds"], 3723)
@@ -146,6 +150,31 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
                 self.assertEqual(video["channel_name"], "领导影响力学院")
                 self.assertIn("## 视频资讯", video["summary_markdown"])
                 self.assertIn("这个台湾资料很重要。", video["summary_markdown"])
+            finally:
+                conn.close()
+
+    def test_sync_prefers_display_title_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            day_dir = root / "data" / "runs" / "2026-06-01"
+            day_dir.mkdir(parents=True)
+            (day_dir / "daily-overview.zh-CN.md").write_text("# Daily\n\nOverview", encoding="utf-8")
+            write_video(
+                day_dir,
+                "ready",
+                title="The Miranda Hypothesis",
+                display_title="AI 评测中的提示污染",
+                summary="# AI 评测中的提示污染\n\n## 一句话总结\n\nReady summary",
+            )
+
+            sync_knowledge_site(settings)
+
+            conn = connect_db(settings.db_path)
+            try:
+                video = conn.execute("SELECT * FROM videos WHERE video_id = 'ready'").fetchone()
+
+                self.assertEqual(video["title"], "AI 评测中的提示污染")
             finally:
                 conn.close()
 

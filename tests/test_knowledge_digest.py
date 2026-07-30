@@ -19,6 +19,8 @@ import knowledge_digest as knowledge_digest_module
 from generate_report import generate_markdown
 from knowledge_digest import (
     BEIJING_TZ,
+    TranscriptResult,
+    _extract_display_title,
     _normalize_playlist_payload,
     _write_json,
     adopt_summary_for_video,
@@ -36,6 +38,7 @@ from knowledge_digest import (
     retry_pending_summaries,
     select_entries_for_processing,
     summarize_transcript_with_retries,
+    write_video_outputs,
 )
 
 
@@ -265,6 +268,65 @@ class MergeRunResultsTests(unittest.TestCase):
             ["retry-fail", "new-fail"],
         )
         self.assertNotIn("becomes-success", [item["id"] for item in merged_failed])
+
+
+class DisplayTitleTests(unittest.TestCase):
+    def test_extract_display_title_removes_marker_from_summary(self) -> None:
+        display_title, summary = _extract_display_title(
+            "中文标题：AI 评测中的提示污染\n\n## 一句话总结\n\n模型评测被提示污染影响。",
+            "The Miranda Hypothesis",
+        )
+
+        self.assertEqual(display_title, "AI 评测中的提示污染")
+        self.assertEqual(summary, "## 一句话总结\n\n模型评测被提示污染影响。")
+
+    def test_extract_display_title_falls_back_without_marker(self) -> None:
+        display_title, summary = _extract_display_title(
+            "## 一句话总结\n\n模型评测被提示污染影响。",
+            "The Miranda Hypothesis",
+        )
+
+        self.assertEqual(display_title, "The Miranda Hypothesis")
+        self.assertEqual(summary, "## 一句话总结\n\n模型评测被提示污染影响。")
+
+    def test_write_video_outputs_uses_display_title_for_summary_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            video = {
+                "id": "abc123",
+                "title": "The Miranda Hypothesis",
+                "url": "https://www.youtube.com/watch?v=abc123",
+                "channel_name": "Results Gen",
+                "upload_date": "20260601",
+                "duration_string": "10:00",
+            }
+            transcript = TranscriptResult(
+                text="Transcript",
+                language="en",
+                source="official",
+                segments=[],
+            )
+
+            result = write_video_outputs(
+                run_dir,
+                video,
+                transcript,
+                "中文标题：AI 评测中的提示污染\n\n## 一句话总结\n\n模型评测被提示污染影响。",
+                summary_status="summary_ready",
+            )
+
+            summary_path = run_dir / "videos" / "abc123" / "summary.zh-CN.md"
+            metadata_path = run_dir / "videos" / "abc123" / "metadata.json"
+            summary_markdown = summary_path.read_text(encoding="utf-8")
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(summary_markdown.startswith("# AI 评测中的提示污染\n\n"))
+            self.assertNotIn("中文标题：", summary_markdown)
+            self.assertEqual(metadata["title"], "The Miranda Hypothesis")
+            self.assertEqual(metadata["display_title"], "AI 评测中的提示污染")
+            self.assertEqual(result["title"], "The Miranda Hypothesis")
+            self.assertEqual(result["display_title"], "AI 评测中的提示污染")
+            self.assertEqual(result["summary_text"], "## 一句话总结\n\n模型评测被提示污染影响。")
 
 
 class SummaryRetryTests(unittest.TestCase):
