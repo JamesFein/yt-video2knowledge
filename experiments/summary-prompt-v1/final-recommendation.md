@@ -4,7 +4,7 @@
 
 目前证据支持 **一个通用懒提示词**，不支持在生成时先分类再路由。观点/解释、教程/演示、资讯/市场、叙事/访谈仍适合作为抽样与质量分析标签，但四个类别增量都没有达到“4/6 胜出、平均提升 0.25/5、无新增忠实性失败”的保留门槛。
 
-最终人工复核候选为 [`prompts/final-candidate.md`](prompts/final-candidate.md)，即 v3。它不是可直接接入生产的已验收版本：内容指标显著优于当前提示词，但长度和引语格式仍未满足全部硬条件。
+最终人工复核候选为 [`final-candidate.md`](../../prompts/experiments/summary-prompt-v1/final-candidate.md)，即 v3。它不是可直接接入生产的已验收版本：内容指标显著优于当前提示词，但长度和引语格式仍未满足全部硬条件。
 
 ## 三轮提示词对照
 
@@ -47,9 +47,9 @@ v3 的 24 篇主样本中有 8 篇超过 1,500 字符。自动检查还将 20 �
 ## 产物位置
 
 - 60 篇分类与合并理由：[`classification-report.md`](classification-report.md)
-- 分类提示词：[`prompts/classifier.md`](prompts/classifier.md)
-- 初始通用提示词：[`prompts/general-v1.md`](prompts/general-v1.md)
-- 四个类别增量：[`prompts/categories/`](prompts/categories/)
-- 最终人工复核候选：[`prompts/final-candidate.md`](prompts/final-candidate.md)
+- 分类提示词：[`classifier.md`](../../prompts/experiments/summary-prompt-v1/classifier.md)
+- 初始通用提示词：[`general-v1.md`](../../prompts/experiments/summary-prompt-v1/general-v1.md)
+- 四个类别增量：[`categories/`](../../prompts/experiments/summary-prompt-v1/categories/)
+- 最终人工复核候选：[`final-candidate.md`](../../prompts/experiments/summary-prompt-v1/final-candidate.md)
 - 各轮量化结果：[`results.md`](results.md)、[`results-v2.md`](results-v2.md)、[`results-v3.md`](results-v3.md)
 - 大体积快照、生成结果和匿名复核包：`data/experiments/summary-prompt-v1/`

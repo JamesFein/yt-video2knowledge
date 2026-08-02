@@ -159,6 +159,12 @@ Retry pending summaries:
 uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
 ```
 
+Regenerate every existing summary from its saved transcript without downloading or transcribing again:
+
+```bash
+uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --regenerate-summaries
+```
+
 Force one more bounded single-video summary retry:
 
 ```bash

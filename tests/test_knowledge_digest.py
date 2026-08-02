@@ -328,6 +328,31 @@ class DisplayTitleTests(unittest.TestCase):
             self.assertEqual(result["display_title"], "AI 评测中的提示污染")
             self.assertEqual(result["summary_text"], "## 一句话总结\n\n模型评测被提示污染影响。")
 
+    def test_pending_summary_does_not_leave_markdown_for_the_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            video = {
+                "id": "pending",
+                "title": "Pending",
+                "url": "https://www.youtube.com/watch?v=pending",
+                "channel_name": "Channel",
+            }
+            transcript = TranscriptResult(text="Transcript", language="en", source="official", segments=[])
+
+            result = write_video_outputs(
+                run_dir,
+                video,
+                transcript,
+                None,
+                summary_status="pending_summary",
+                summary_error="incomplete_response",
+            )
+
+            video_dir = run_dir / "videos" / "pending"
+            self.assertFalse((video_dir / "summary.zh-CN.md").exists())
+            self.assertFalse((video_dir / "report.md").exists())
+            self.assertEqual(result["processing_status"], "pending_summary")
+
 
 class SummaryRetryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -502,6 +527,81 @@ class SummaryRetryTests(unittest.TestCase):
         self.assertIsNone(retry_state["last_error"])
         self.assertEqual(retry_state["history"][0]["stopped_reason"], "max_attempts")
 
+    def test_incomplete_response_uses_short_backoff_and_records_only_metadata(self) -> None:
+        calls = []
+        sleeps = []
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str):
+            calls.append(video_title)
+            if len(calls) == 1:
+                raise knowledge_digest_module.IncompleteModelResponseError(
+                    "missing completion marker",
+                    response_id="resp_partial",
+                    provider="anthropic",
+                    provider_status="completed",
+                    stop_reason="end_turn",
+                    output_chars=321,
+                    validation_errors=["missing_or_misplaced_completion_marker"],
+                )
+            return knowledge_digest_module.GeneratedSummary(
+                "中文标题：完成\n\n## 核心结论\n\n完整正文",
+                knowledge_digest_module.ModelResponse(
+                    text="raw response with marker",
+                    provider="anthropic",
+                    response_id="resp_complete",
+                    provider_status="completed",
+                    stop_reason="end_turn",
+                ),
+            )
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            clock=lambda: self.now,
+            sleep_fn=sleeps.append,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertIn("完整正文", summary)
+        self.assertEqual(sleeps, [2])
+        self.assertEqual(retry_state["response_id"], "resp_complete")
+        failed_attempt = retry_state["attempt_history"][0]
+        self.assertEqual(failed_attempt["failure_kind"], "incomplete_response")
+        self.assertEqual(failed_attempt["response_id"], "resp_partial")
+        self.assertEqual(failed_attempt["output_chars"], 321)
+        self.assertNotIn("raw", json.dumps(retry_state, ensure_ascii=False).lower())
+
+    def test_three_incomplete_responses_stop_without_returning_a_partial(self) -> None:
+        sleeps = []
+
+        def fake_summary(transcript_text: str, video_title: str, settings: dict, playlist_name: str):
+            raise knowledge_digest_module.IncompleteModelResponseError(
+                "truncated",
+                response_id="resp_partial",
+                provider="openai",
+                provider_status="incomplete",
+                stop_reason="max_output_tokens",
+                output_chars=500,
+            )
+
+        summary, retry_state = summarize_transcript_with_retries(
+            "transcript",
+            "Video",
+            {},
+            "Knowledge",
+            clock=lambda: self.now,
+            sleep_fn=sleeps.append,
+            summarize_fn=fake_summary,
+        )
+
+        self.assertIsNone(summary)
+        self.assertEqual(sleeps, [2, 5])
+        self.assertEqual(retry_state["attempt_count"], 3)
+        self.assertEqual(retry_state["stopped_reason"], "max_attempts")
+        self.assertEqual(len(retry_state["attempt_history"]), 3)
+
 
 class DownloadAudioTests(unittest.TestCase):
     def test_download_audio_success_does_not_retry(self) -> None:
@@ -571,14 +671,27 @@ class SummarizeTranscriptTests(unittest.TestCase):
 
         def fake_openai_request(messages, settings, max_tokens=1200):
             calls.append(messages)
-            return "# 總結\n\n這個臺灣資料很重要。"
+            return knowledge_digest_module.ModelResponse(
+                "中文標題：總結\n\n## 核心結論\n\n這個臺灣資料很重要。\n\n<!-- SUMMARY_COMPLETE -->",
+                provider="anthropic",
+                provider_status="missing",
+            )
 
         with mock.patch.object(knowledge_digest_module, "_openai_request", side_effect=fake_openai_request):
             summary = knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
 
-        self.assertEqual(summary, "# 总结\n\n这个台湾资料很重要。")
+        self.assertEqual(summary.text, "中文标题：总结\n\n## 核心结论\n\n这个台湾资料很重要。")
+        self.assertNotIn("SUMMARY_COMPLETE", summary.text)
+        expected_prompt = (
+            knowledge_digest_module.PROMPT_DIR / knowledge_digest_module.SUMMARY_ARTICLE_PROMPT_PATH
+        ).read_text(encoding="utf-8").strip()
+        self.assertEqual(calls[0][0]["content"], expected_prompt)
         prompt_text = "\n".join(message["content"] for message in calls[0])
         self.assertIn("简体中文", prompt_text)
+        self.assertIn("具体代价", prompt_text)
+        self.assertIn("人物背景", prompt_text)
+        self.assertIn("全文通常 10–18 处", prompt_text)
+        self.assertIn("中文标题：", prompt_text)
         self.assertNotIn("回看", prompt_text)
         self.assertNotIn("回看片段", prompt_text)
         self.assertNotIn("值得回看的时间点", prompt_text)
@@ -586,26 +699,228 @@ class SummarizeTranscriptTests(unittest.TestCase):
     def test_multi_chunk_summaries_and_final_output_are_simplified_chinese(self) -> None:
         calls = []
         responses = [
-            "第一段總結：這個臺灣資料。",
-            "第二段總結：關鍵啟發。",
-            "# 最終\n\n這個臺灣資料有關鍵啟發。",
+            "第一段總結：這個臺灣資料。\n<!-- EVIDENCE_COMPLETE -->",
+            "第二段總結：關鍵啟發。\n<!-- EVIDENCE_COMPLETE -->",
+            "中文標題：最終\n\n## 核心結論\n\n這個臺灣資料有關鍵啟發。\n<!-- SUMMARY_COMPLETE -->",
         ]
 
         def fake_openai_request(messages, settings, max_tokens=1200):
             calls.append(messages)
-            return responses[len(calls) - 1]
+            return knowledge_digest_module.ModelResponse(
+                responses[len(calls) - 1],
+                provider="anthropic",
+                provider_status="completed",
+                stop_reason="end_turn",
+            )
 
         with mock.patch.object(knowledge_digest_module, "_chunk_text", return_value=["chunk one", "chunk two"]):
             with mock.patch.object(knowledge_digest_module, "_openai_request", side_effect=fake_openai_request):
                 summary = knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
 
-        self.assertEqual(summary, "# 最终\n\n这个台湾资料有关键启发。")
+        self.assertEqual(summary.text, "中文标题：最终\n\n## 核心结论\n\n这个台湾资料有关键启发。")
+        expected_article_prompt = (
+            knowledge_digest_module.PROMPT_DIR / knowledge_digest_module.SUMMARY_ARTICLE_PROMPT_PATH
+        ).read_text(encoding="utf-8").strip()
+        expected_evidence_prompt = (
+            knowledge_digest_module.PROMPT_DIR / knowledge_digest_module.SUMMARY_EVIDENCE_PROMPT_PATH
+        ).read_text(encoding="utf-8").strip()
+        self.assertEqual(calls[0][0]["content"], expected_evidence_prompt)
+        self.assertEqual(calls[1][0]["content"], expected_evidence_prompt)
+        self.assertEqual(calls[2][0]["content"], expected_article_prompt)
         final_prompt = calls[2][1]["content"]
         all_prompts = "\n".join(message["content"] for messages in calls for message in messages)
         self.assertIn("第一段总结：这个台湾资料。", final_prompt)
         self.assertIn("第二段总结：关键启发。", final_prompt)
         self.assertIn("简体中文", all_prompts)
         self.assertNotIn("回看", all_prompts)
+
+    def test_rejects_empty_level_two_heading(self) -> None:
+        malformed = knowledge_digest_module.ModelResponse(
+            "中文标题：测试\n\n## 核心结论\n\n内容\n\n##\n<!-- SUMMARY_COMPLETE -->",
+            provider="anthropic",
+            provider_status="completed",
+            stop_reason="end_turn",
+        )
+        with mock.patch.object(knowledge_digest_module, "_openai_request", return_value=malformed):
+            with self.assertRaisesRegex(knowledge_digest_module.InvalidSummaryArticleError, "empty_level_two_heading"):
+                knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
+
+    def test_rejects_completed_response_without_completion_marker(self) -> None:
+        response = knowledge_digest_module.ModelResponse(
+            "中文标题：测试\n\n## 核心结论\n\n内容",
+            provider="anthropic",
+            provider_status="completed",
+            stop_reason="end_turn",
+        )
+        with mock.patch.object(knowledge_digest_module, "_openai_request", return_value=response):
+            with self.assertRaises(knowledge_digest_module.IncompleteModelResponseError):
+                knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
+
+    def test_rejects_dangling_heading_and_unclosed_markdown(self) -> None:
+        malformed_articles = [
+            "中文标题：测试\n\n## 核心结论\n\n内容\n\n## 下一节",
+            "中文标题：测试\n\n## 核心结论\n\n**未闭合",
+            "中文标题：测试\n\n## 核心结论\n\n```python\nprint('x')",
+        ]
+        for article in malformed_articles:
+            with self.subTest(article=article):
+                response = knowledge_digest_module.ModelResponse(
+                    article + "\n<!-- SUMMARY_COMPLETE -->",
+                    provider="openai",
+                    provider_status="missing",
+                )
+                with mock.patch.object(knowledge_digest_module, "_openai_request", return_value=response):
+                    with self.assertRaises(knowledge_digest_module.InvalidSummaryArticleError):
+                        knowledge_digest_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
+
+    def test_missing_or_empty_production_prompt_fails_before_model_request(self) -> None:
+        for create_empty_file in (False, True):
+            with self.subTest(create_empty_file=create_empty_file):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    prompt_dir = Path(tmpdir)
+                    if create_empty_file:
+                        prompt_path = prompt_dir / knowledge_digest_module.SUMMARY_ARTICLE_PROMPT_PATH
+                        prompt_path.parent.mkdir(parents=True)
+                        prompt_path.write_text("", encoding="utf-8")
+                    with mock.patch.object(knowledge_digest_module, "PROMPT_DIR", prompt_dir):
+                        with mock.patch.object(knowledge_digest_module, "_openai_request") as request:
+                            with self.assertRaises(knowledge_digest_module.ConfigurationError):
+                                knowledge_digest_module.summarize_transcript(
+                                    "transcript", "Video", {}, "Knowledge"
+                                )
+                    request.assert_not_called()
+
+    def test_daily_overview_uses_prompt_registry_file(self) -> None:
+        captured = []
+
+        def fake_openai_request(messages, settings, max_tokens=1200):
+            captured.append(messages)
+            return knowledge_digest_module.ModelResponse("完成", provider="openai")
+
+        videos = [{"title": "Video", "channel_name": "Channel", "summary_text": "Summary"}]
+        with mock.patch.object(knowledge_digest_module, "_openai_request", side_effect=fake_openai_request):
+            result = knowledge_digest_module.summarize_daily_overview(
+                date(2026, 8, 2), videos, {}, "Knowledge"
+            )
+
+        expected = (
+            knowledge_digest_module.PROMPT_DIR / knowledge_digest_module.DAILY_OVERVIEW_PROMPT_PATH
+        ).read_text(encoding="utf-8").strip()
+        self.assertEqual(result, "完成")
+        self.assertEqual(captured[0][0]["content"], expected)
+
+
+class ModelApiRoutingTests(unittest.TestCase):
+    def test_claude_model_uses_anthropic_messages_endpoint(self) -> None:
+        settings = {
+            "api_key": "secret",
+            "base_url": "https://www.dmxapi.cn",
+            "model": "claude-sonnet-5-cc",
+        }
+        response = {
+            "id": "msg_123",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+            "content": [{"type": "text", "text": "完成"}],
+        }
+        with mock.patch.object(knowledge_digest_module, "_post_json", return_value=response) as post:
+            text = knowledge_digest_module._openai_request(
+                [
+                    {"role": "system", "content": "system prompt"},
+                    {"role": "user", "content": "transcript"},
+                ],
+                settings,
+                max_tokens=4096,
+            )
+
+        self.assertEqual(text.text, "完成")
+        self.assertEqual(text.response_id, "msg_123")
+        self.assertEqual(text.provider_status, "completed")
+        self.assertEqual(text.stop_reason, "end_turn")
+        self.assertEqual(post.call_args.args[0], "https://www.dmxapi.cn/v1/messages")
+        self.assertEqual(post.call_args.args[1]["system"], "system prompt")
+        self.assertEqual(post.call_args.args[1]["max_tokens"], 4096)
+        self.assertEqual(post.call_args.kwargs["headers"]["x-api-key"], "secret")
+
+    def test_non_claude_model_uses_responses_endpoint(self) -> None:
+        settings = {
+            "api_key": "secret",
+            "base_url": "https://www.dmxapi.cn/v1",
+            "model": "gpt-5.6-sol",
+        }
+        response = {"id": "resp_123", "status": "completed", "output_text": "完成"}
+        with mock.patch.object(knowledge_digest_module, "_post_json", return_value=response) as post:
+            text = knowledge_digest_module._openai_request(
+                [{"role": "user", "content": "transcript"}],
+                settings,
+            )
+
+        self.assertEqual(text.text, "完成")
+        self.assertEqual(text.response_id, "resp_123")
+        self.assertEqual(text.provider_status, "completed")
+        self.assertEqual(post.call_args.args[0], "https://www.dmxapi.cn/v1/responses")
+
+    def test_anthropic_max_tokens_rejects_returned_text(self) -> None:
+        settings = {"api_key": "secret", "base_url": "https://www.dmxapi.cn", "model": "claude-sonnet-5-cc"}
+        response = {
+            "id": "msg_cut",
+            "stop_reason": "max_tokens",
+            "usage": {"output_tokens": 4096},
+            "content": [{"type": "text", "text": "partial article"}],
+        }
+        with mock.patch.object(knowledge_digest_module, "_post_json", return_value=response):
+            with self.assertRaises(knowledge_digest_module.IncompleteModelResponseError) as raised:
+                knowledge_digest_module._openai_request([{"role": "user", "content": "x"}], settings)
+        self.assertEqual(raised.exception.response_id, "msg_cut")
+        self.assertEqual(raised.exception.stop_reason, "max_tokens")
+        self.assertEqual(raised.exception.output_chars, len("partial article"))
+
+    def test_openai_incomplete_rejects_returned_text_and_reason(self) -> None:
+        settings = {"api_key": "secret", "base_url": "https://www.dmxapi.cn/v1", "model": "gpt-5.6-sol"}
+        response = {
+            "id": "resp_cut",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output_text": "partial article",
+        }
+        with mock.patch.object(knowledge_digest_module, "_post_json", return_value=response):
+            with self.assertRaises(knowledge_digest_module.IncompleteModelResponseError) as raised:
+                knowledge_digest_module._openai_request([{"role": "user", "content": "x"}], settings)
+        self.assertEqual(raised.exception.provider_status, "incomplete")
+        self.assertEqual(raised.exception.stop_reason, "max_output_tokens")
+
+    def test_missing_provider_status_is_allowed_for_compatible_proxies(self) -> None:
+        settings = {"api_key": "secret", "base_url": "https://www.dmxapi.cn/v1", "model": "gpt-5.6-sol"}
+        with mock.patch.object(
+            knowledge_digest_module,
+            "_post_json",
+            return_value={"id": "resp_proxy", "output_text": "完成"},
+        ):
+            response = knowledge_digest_module._openai_request([{"role": "user", "content": "x"}], settings)
+        self.assertEqual(response.text, "完成")
+        self.assertEqual(response.provider_status, "missing")
+
+    def test_openai_refusal_content_is_not_treated_as_an_empty_retryable_response(self) -> None:
+        settings = {"api_key": "secret", "base_url": "https://www.dmxapi.cn/v1", "model": "gpt-5.6-sol"}
+        response = {
+            "id": "resp_refusal",
+            "status": "completed",
+            "output": [{"content": [{"type": "refusal", "refusal": "not available"}]}],
+        }
+        with mock.patch.object(knowledge_digest_module, "_post_json", return_value=response):
+            with self.assertRaises(knowledge_digest_module.PolicyModelResponseError):
+                knowledge_digest_module._openai_request([{"role": "user", "content": "x"}], settings)
+
+    def test_invalid_json_response_is_classified_as_transport_failure(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"incomplete"'
+        with mock.patch.object(knowledge_digest_module.urllib.request, "urlopen", return_value=response):
+            with self.assertRaises(knowledge_digest_module.TransportModelResponseError):
+                knowledge_digest_module._post_json(
+                    "https://example.test/v1/responses",
+                    {"model": "test"},
+                    {"api_key": "secret"},
+                )
 
 
 class ManifestCompletionTests(unittest.TestCase):
@@ -741,6 +1056,8 @@ class RetryPendingSummariesTests(unittest.TestCase):
 
             def fake_retry(transcript_text: str, video_title: str, settings: dict, playlist_name: str, **kwargs):
                 self.assertTrue(kwargs["force_retry"])
+                self.assertEqual(kwargs["run_attempt_limit"], 1)
+                self.assertEqual(kwargs["force_retry_attempts"], 1)
                 return "forced summary", {"attempt_count": 6, "last_error": None}
 
             with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
@@ -757,6 +1074,117 @@ class RetryPendingSummariesTests(unittest.TestCase):
 
             self.assertEqual(manifest["pending_summary_count"], 0)
             self.assertEqual(manifest["summary_ready_count"], 1)
+
+    def test_regenerate_summaries_reuses_ready_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = make_test_config(str(root / "runs"))
+            target_date = date(2026, 6, 10)
+            run_dir = config.output_root_path / target_date.isoformat()
+            video_dir = run_dir / "videos" / "ready"
+            video_dir.mkdir(parents=True)
+            (video_dir / "transcript.original.txt").write_text("ready transcript", encoding="utf-8")
+            (video_dir / "summary.zh-CN.md").write_text("# Old\n", encoding="utf-8")
+            _write_json(
+                run_dir / "manifest.json",
+                {
+                    "browser_mode": "managed",
+                    "run_mode": "full",
+                    "incremental_stats": {},
+                    "processed_videos": [
+                        {
+                            "id": "ready",
+                            "title": "Ready",
+                            "url": "https://www.youtube.com/watch?v=ready",
+                            "channel_name": "Channel",
+                            "processing_status": "summary_ready",
+                            "summary_text": "old",
+                            "transcript_path": "videos/ready/transcript.original.txt",
+                            "transcript_language": "en",
+                            "transcript_source": "manual",
+                            "summary_retry": {"attempt_count": 1},
+                        }
+                    ],
+                    "failed_videos": [],
+                    "needs_review_videos": [],
+                },
+            )
+
+            def fake_retry(transcript_text: str, video_title: str, settings: dict, playlist_name: str, **kwargs):
+                self.assertEqual(transcript_text, "ready transcript")
+                self.assertTrue(kwargs["force_retry"])
+                self.assertEqual(kwargs["run_attempt_limit"], 3)
+                self.assertEqual(kwargs["force_retry_attempts"], 3)
+                return "中文标题：新标题\n\n## 核心结论\n\n新文章", {"attempt_count": 2}
+
+            with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                with mock.patch.object(knowledge_digest_module, "summarize_transcript_with_retries", side_effect=fake_retry):
+                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
+                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                            with mock.patch.object(knowledge_digest_module, "save_state"):
+                                manifest = retry_pending_summaries(
+                                    config,
+                                    target_date,
+                                    regenerate_all=True,
+                                )
+
+            self.assertEqual(manifest["regenerated_summary_count"], 1)
+            self.assertEqual(manifest["regeneration_failed_count"], 0)
+            self.assertIn("# 新标题", (video_dir / "summary.zh-CN.md").read_text(encoding="utf-8"))
+
+    def test_failed_regeneration_preserves_existing_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = make_test_config(str(root / "runs"))
+            target_date = date(2026, 6, 10)
+            run_dir = config.output_root_path / target_date.isoformat()
+            video_dir = run_dir / "videos" / "ready"
+            video_dir.mkdir(parents=True)
+            (video_dir / "transcript.original.txt").write_text("ready transcript", encoding="utf-8")
+            summary_path = video_dir / "summary.zh-CN.md"
+            summary_path.write_text("# Old\n", encoding="utf-8")
+            _write_json(
+                run_dir / "manifest.json",
+                {
+                    "browser_mode": "managed",
+                    "run_mode": "full",
+                    "incremental_stats": {},
+                    "processed_videos": [
+                        {
+                            "id": "ready",
+                            "title": "Ready",
+                            "url": "https://www.youtube.com/watch?v=ready",
+                            "channel_name": "Channel",
+                            "processing_status": "summary_ready",
+                            "summary_text": "old",
+                            "transcript_path": "videos/ready/transcript.original.txt",
+                            "transcript_language": "en",
+                            "transcript_source": "manual",
+                        }
+                    ],
+                    "failed_videos": [],
+                    "needs_review_videos": [],
+                },
+            )
+
+            with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                with mock.patch.object(
+                    knowledge_digest_module,
+                    "summarize_transcript_with_retries",
+                    return_value=(None, {"attempt_count": 1, "last_error": "API unavailable"}),
+                ):
+                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
+                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                            with mock.patch.object(knowledge_digest_module, "save_state"):
+                                manifest = retry_pending_summaries(
+                                    config,
+                                    target_date,
+                                    regenerate_all=True,
+                                )
+
+            self.assertEqual(summary_path.read_text(encoding="utf-8"), "# Old\n")
+            self.assertEqual(manifest["regenerated_summary_count"], 0)
+            self.assertEqual(manifest["regeneration_failed_count"], 1)
 
     def test_adopt_summary_file_marks_pending_video_ready_and_rebuilds_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -844,6 +1272,17 @@ class JsonWriteTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(payload["target_date"], "2026-03-20")
         self.assertTrue(payload["generated_at"].startswith("2026-03-21T09:00:00"))
+
+    def test_atomic_text_write_keeps_old_file_when_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "summary.zh-CN.md"
+            path.write_text("old complete summary", encoding="utf-8")
+            with mock.patch.object(knowledge_digest_module.os, "replace", side_effect=OSError("interrupted")):
+                with self.assertRaises(OSError):
+                    knowledge_digest_module._atomic_write_text(path, "new summary")
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "old complete summary")
+            self.assertEqual(list(path.parent.glob(".summary.zh-CN.md.*.tmp")), [])
 
 
 class YoutubeApiPaginationToleranceTests(unittest.TestCase):
@@ -1023,6 +1462,18 @@ class CliTests(unittest.TestCase):
                     exit_code = cli_module.main()
         self.assertEqual(exit_code, 0)
         self.assertTrue(mocked_run.call_args.kwargs["full_reprocess"])
+
+    def test_cli_passes_regenerate_summaries_flag(self) -> None:
+        with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:
+            with mock.patch.object(cli_module, "_auto_sync_knowledge_site", return_value=0):
+                with mock.patch.object(
+                    sys,
+                    "argv",
+                    ["run_knowledge_digest.py", "--target-date", "2026-03-21", "--regenerate-summaries"],
+                ):
+                    exit_code = cli_module.main()
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(mocked_run.call_args.kwargs["regenerate_summaries"])
 
     def test_cli_video_id_still_bypasses_incremental_skip_decision(self) -> None:
         with mock.patch.object(cli_module, "run_knowledge_digest", return_value={"ok": True}) as mocked_run:

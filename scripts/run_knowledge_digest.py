@@ -58,7 +58,13 @@ def main() -> int:
     parser.add_argument("--bootstrap-login", action="store_true", help="Open the managed Chrome profile for a one-time YouTube login.")
     parser.add_argument("--attach-current-chrome", action="store_true", help="Debug-only mode: attach to the current Chrome CDP session.")
     parser.add_argument("--force-login", action="store_true", help="Deprecated alias for --bootstrap-login.")
-    parser.add_argument("--retry-summaries", action="store_true", help="Retry pending summaries from an existing run directory.")
+    summary_mode = parser.add_mutually_exclusive_group()
+    summary_mode.add_argument("--retry-summaries", action="store_true", help="Retry pending summaries from an existing run directory.")
+    summary_mode.add_argument(
+        "--regenerate-summaries",
+        action="store_true",
+        help="Regenerate existing summaries from saved transcripts without downloading or transcribing again.",
+    )
     parser.add_argument("--allow-fallback-first-seen", action="store_true", help="Allow first-seen fallback when the YouTube API cannot verify playlist added dates.")
     parser.add_argument("--full-reprocess", action="store_true", help="Force a full rerun for the target date instead of default same-day incremental processing.")
     parser.add_argument("--video-id", help="Process a single video directly.")
@@ -76,6 +82,7 @@ def main() -> int:
             bootstrap_login=args.bootstrap_login or args.force_login,
             attach_current_chrome=args.attach_current_chrome,
             retry_summaries=args.retry_summaries,
+            regenerate_summaries=args.regenerate_summaries,
             allow_fallback_first_seen=args.allow_fallback_first_seen,
             full_reprocess=args.full_reprocess,
             video_id=args.video_id,

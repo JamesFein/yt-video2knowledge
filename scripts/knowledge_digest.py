@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 from opencc import OpenCC
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+PROMPT_DIR = ROOT_DIR / "prompts"
 DATA_DIR = ROOT_DIR / "data"
 STATE_DIR = DATA_DIR / "state"
 DEFAULT_CONFIG_PATH = DATA_DIR / "knowledge_config.json"
@@ -50,10 +51,18 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 YOUTUBE_READONLY_SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
-SUMMARY_INLINE_ATTEMPTS = 4
-SUMMARY_MAX_ATTEMPTS = 5
+SUMMARY_INLINE_ATTEMPTS = 3
+SUMMARY_MAX_ATTEMPTS = 3
 SUMMARY_RETRY_WINDOW = timedelta(hours=24)
 SUMMARY_RETRY_BACKOFF_SECONDS = (30, 120, 300)
+SUMMARY_INCOMPLETE_RETRY_BACKOFF_SECONDS = (2, 5)
+SUMMARY_ARTICLE_MAX_TOKENS = 4096
+SUMMARY_CHUNK_MAX_CHARS = 120000
+SUMMARY_COMPLETE_MARKER = "<!-- SUMMARY_COMPLETE -->"
+EVIDENCE_COMPLETE_MARKER = "<!-- EVIDENCE_COMPLETE -->"
+SUMMARY_ARTICLE_PROMPT_PATH = Path("production/summary-article-v5.md")
+SUMMARY_EVIDENCE_PROMPT_PATH = Path("production/summary-evidence-v1.md")
+DAILY_OVERVIEW_PROMPT_PATH = Path("production/daily-overview-v1.md")
 _SIMPLIFIED_CHINESE_CONVERTER = OpenCC("t2s")
 NON_RETRYABLE_SUMMARY_ERROR_MARKERS = (
     "missing runtime configuration",
@@ -103,12 +112,80 @@ class ConfigurationError(DigestError):
     """Raised when runtime configuration is incomplete."""
 
 
+def _load_prompt(relative_path: Path) -> str:
+    path = PROMPT_DIR / relative_path
+    try:
+        prompt = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError(f"Unable to read prompt file: {path}") from exc
+    if not prompt:
+        raise ConfigurationError(f"Prompt file is empty: {path}")
+    return prompt
+
+
 class ExternalCommandError(DigestError):
     """Raised when an external command fails."""
 
 
 class BrowserConnectionError(DigestError):
     """Raised when the current Chrome CDP endpoint cannot be used."""
+
+
+class ModelResponseError(DigestError):
+    """Raised when a model response cannot safely be used."""
+
+    failure_kind = "model_response_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        response_id: str | None = None,
+        provider: str | None = None,
+        provider_status: str | None = None,
+        stop_reason: str | None = None,
+        output_chars: int = 0,
+        validation_errors: list[str] | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.response_id = response_id
+        self.provider = provider
+        self.provider_status = provider_status
+        self.stop_reason = stop_reason
+        self.output_chars = output_chars
+        self.validation_errors = list(validation_errors or [])
+        self.usage = dict(usage or {})
+
+
+class TransportModelResponseError(ModelResponseError):
+    """Raised when the HTTP or JSON response is incomplete."""
+
+    failure_kind = "transport_error"
+
+
+class IncompleteModelResponseError(ModelResponseError):
+    """Raised when the provider or completion marker reports truncation."""
+
+    failure_kind = "incomplete_response"
+
+
+class InvalidSummaryArticleError(ModelResponseError):
+    """Raised when generated Markdown fails minimum structural checks."""
+
+    failure_kind = "invalid_structure"
+
+
+class PolicyModelResponseError(ModelResponseError):
+    """Raised when the provider refuses the request for policy reasons."""
+
+    failure_kind = "policy_rejection"
+
+
+class ProviderModelResponseError(ModelResponseError):
+    """Raised when the provider reports a non-policy request failure."""
+
+    failure_kind = "provider_error"
 
 
 @dataclass
@@ -146,6 +223,22 @@ class TranscriptResult:
 
 
 @dataclass
+class ModelResponse:
+    text: str
+    provider: str
+    response_id: str | None = None
+    provider_status: str = "missing"
+    stop_reason: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GeneratedSummary:
+    text: str
+    response: ModelResponse
+
+
+@dataclass
 class PlaylistFetchResult:
     entries: list[dict[str, Any]]
     cookie_file: Path | None
@@ -173,6 +266,28 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
         encoding="utf-8",
     )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def load_env_file(env_path: Path = DEFAULT_ENV_PATH) -> None:
@@ -1597,6 +1712,26 @@ def _openai_headers(settings: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _anthropic_headers(settings: dict[str, str]) -> dict[str, str]:
+    return {
+        "Accept": "application/json",
+        "x-api-key": settings["api_key"],
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+
+
+def _api_endpoint(base_url: str, endpoint: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return f"{base}/{endpoint}"
+    return f"{base}/v1/{endpoint}"
+
+
+def _uses_anthropic_messages(model: str) -> bool:
+    return model.lower().startswith("claude-")
+
+
 def _response_input_from_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
     role_map = {"system": "developer", "user": "user", "assistant": "assistant", "developer": "developer"}
     items: list[dict[str, Any]] = []
@@ -1631,11 +1766,36 @@ def _extract_response_output_text(data: dict[str, Any]) -> str:
     return "\n".join(part for part in text_parts if part).strip()
 
 
-def _post_json(url: str, payload: dict[str, Any], settings: dict[str, str]) -> dict[str, Any]:
+def _response_contains_refusal(data: dict[str, Any]) -> bool:
+    for item in data.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and content.get("type") == "refusal":
+                return True
+    return False
+
+
+def _extract_anthropic_output_text(data: dict[str, Any]) -> str:
+    text_parts = [
+        str(item.get("text", "")).strip()
+        for item in data.get("content", []) or []
+        if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
+    ]
+    return "\n".join(part for part in text_parts if part).strip()
+
+
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    settings: dict[str, str],
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers=_openai_headers(settings),
+        headers=headers or _openai_headers(settings),
         method="POST",
     )
     try:
@@ -1643,7 +1803,11 @@ def _post_json(url: str, payload: dict[str, Any], settings: dict[str, str]) -> d
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise DigestError(f"OpenAI request failed: {detail}") from exc
+        raise ProviderModelResponseError(
+            f"Model request failed with HTTP {exc.code}: {detail}",
+            provider_status="http_error",
+            stop_reason=str(exc.code),
+        ) from exc
     except (
         urllib.error.URLError,
         TimeoutError,
@@ -1651,26 +1815,144 @@ def _post_json(url: str, payload: dict[str, Any], settings: dict[str, str]) -> d
         ssl.SSLError,
         http.client.IncompleteRead,
         ConnectionError,
+        UnicodeDecodeError,
     ) as exc:
-        raise DigestError(f"OpenAI request failed: {exc}") from exc
-    return json.loads(body)
+        raise TransportModelResponseError(f"Model response transport failed: {exc}") from exc
+    try:
+        data = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TransportModelResponseError("Model response contained incomplete or invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise TransportModelResponseError("Model response JSON was not an object")
+    return data
 
 
-def _openai_request(messages: list[dict[str, str]], settings: dict[str, str], max_tokens: int = 1200) -> str:
+def _openai_request(
+    messages: list[dict[str, str]],
+    settings: dict[str, str],
+    max_tokens: int = 1200,
+) -> ModelResponse:
+    if _uses_anthropic_messages(settings["model"]):
+        system_parts = [
+            message.get("content", "")
+            for message in messages
+            if message.get("role") in {"system", "developer"}
+        ]
+        anthropic_messages = [
+            {
+                "role": message.get("role", "user"),
+                "content": message.get("content", ""),
+            }
+            for message in messages
+            if message.get("role") in {"user", "assistant"}
+        ]
+        payload = {
+            "model": settings["model"],
+            "system": "\n\n".join(part for part in system_parts if part),
+            "messages": anthropic_messages,
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        data = _post_json(
+            _api_endpoint(settings["base_url"], "messages"),
+            payload,
+            settings,
+            headers=_anthropic_headers(settings),
+        )
+        text = _extract_anthropic_output_text(data)
+        response_id = str(data["id"]) if data.get("id") else None
+        stop_reason = str(data["stop_reason"]) if data.get("stop_reason") else None
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        provider_status = "missing" if stop_reason is None else "completed"
+        metadata = {
+            "response_id": response_id,
+            "provider": "anthropic",
+            "provider_status": provider_status,
+            "stop_reason": stop_reason,
+            "output_chars": len(text),
+            "usage": usage,
+        }
+        if stop_reason == "max_tokens":
+            raise IncompleteModelResponseError(
+                "Anthropic response stopped because max_tokens was reached",
+                **{**metadata, "provider_status": "incomplete"},
+            )
+        if stop_reason == "refusal":
+            raise PolicyModelResponseError(
+                "Anthropic response was refused",
+                **{**metadata, "provider_status": "refused"},
+            )
+        if stop_reason not in {None, "end_turn"}:
+            raise IncompleteModelResponseError(
+                f"Anthropic response ended with unexpected stop_reason={stop_reason}",
+                **{**metadata, "provider_status": "incomplete"},
+            )
+        if not text:
+            raise IncompleteModelResponseError("Anthropic Messages API returned an empty response", **metadata)
+        return ModelResponse(
+            text=text,
+            provider="anthropic",
+            response_id=response_id,
+            provider_status=provider_status,
+            stop_reason=stop_reason,
+            usage=usage,
+        )
+
     responses_payload = {
         "model": settings["model"],
         "input": _response_input_from_messages(messages),
         "temperature": 0.2,
         "max_output_tokens": max_tokens,
     }
-    data = _post_json(f"{settings['base_url']}/responses", responses_payload, settings)
+    data = _post_json(_api_endpoint(settings["base_url"], "responses"), responses_payload, settings)
     text = _extract_response_output_text(data)
-    if text:
-        return text
-    raise DigestError("OpenAI Responses API returned an empty response")
+    response_id = str(data["id"]) if data.get("id") else None
+    status = str(data["status"]) if data.get("status") else None
+    incomplete_details = data.get("incomplete_details")
+    incomplete_reason = (
+        str(incomplete_details.get("reason"))
+        if isinstance(incomplete_details, dict) and incomplete_details.get("reason")
+        else None
+    )
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    metadata = {
+        "response_id": response_id,
+        "provider": "openai",
+        "provider_status": status or "missing",
+        "stop_reason": incomplete_reason,
+        "output_chars": len(text),
+        "usage": usage,
+    }
+    if _response_contains_refusal(data):
+        raise PolicyModelResponseError("OpenAI response contained a refusal", **metadata)
+    if status == "incomplete":
+        error_type = (
+            PolicyModelResponseError
+            if incomplete_reason in {"content_filter", "safety", "refusal"}
+            else IncompleteModelResponseError
+        )
+        raise error_type(
+            f"OpenAI response was incomplete: {incomplete_reason or 'reason missing'}",
+            **metadata,
+        )
+    if status in {"failed", "cancelled"}:
+        raise ProviderModelResponseError(f"OpenAI response ended with status={status}", **metadata)
+    if status not in {None, "completed"}:
+        raise IncompleteModelResponseError(f"OpenAI response ended with unexpected status={status}", **metadata)
+    if not text:
+        raise IncompleteModelResponseError("OpenAI Responses API returned an empty response", **metadata)
+    return ModelResponse(
+        text=text,
+        provider="openai",
+        response_id=response_id,
+        provider_status=status or "missing",
+        stop_reason=incomplete_reason,
+        usage=usage,
+    )
 
 
-def _chunk_text(text: str, max_chars: int = 12000) -> list[str]:
+def _chunk_text(text: str, max_chars: int = SUMMARY_CHUNK_MAX_CHARS) -> list[str]:
     lines = text.splitlines()
     chunks: list[str] = []
     current: list[str] = []
@@ -1707,44 +1989,128 @@ def _extract_display_title(summary_text: str, fallback_title: str) -> tuple[str,
     return fallback_title, cleaned
 
 
+def _model_response_error_kwargs(
+    response: ModelResponse,
+    *,
+    validation_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    metadata = {
+        "response_id": response.response_id,
+        "provider": response.provider,
+        "provider_status": response.provider_status,
+        "stop_reason": response.stop_reason,
+        "output_chars": len(response.text),
+        "usage": response.usage,
+    }
+    if validation_errors is not None:
+        metadata["validation_errors"] = validation_errors
+    return metadata
+
+
+def _strip_required_completion_marker(response: ModelResponse, marker: str) -> str:
+    text = response.text.rstrip()
+    lines = text.splitlines()
+    if not lines or lines[-1].strip() != marker or text.count(marker) != 1:
+        raise IncompleteModelResponseError(
+            f"Model response is missing the required final marker {marker}",
+            validation_errors=["missing_or_misplaced_completion_marker"],
+            **_model_response_error_kwargs(response),
+        )
+    article = "\n".join(lines[:-1]).rstrip()
+    if not article:
+        raise IncompleteModelResponseError(
+            "Model response contained only the completion marker",
+            validation_errors=["empty_content_before_completion_marker"],
+            **_model_response_error_kwargs(response),
+        )
+    return article
+
+
+def _summary_structure_errors(summary_text: str) -> list[str]:
+    lines = summary_text.splitlines()
+    errors: list[str] = []
+    first_line = lines[0].strip() if lines else ""
+    title_match = re.fullmatch(r"中文标题[:：]\s*(.+)", first_line)
+    if not title_match or not title_match.group(1).strip():
+        errors.append("missing_or_empty_chinese_title")
+
+    core_heading_count = sum(line.strip() == "## 核心结论" for line in lines)
+    if core_heading_count != 1:
+        errors.append("core_conclusion_heading_must_appear_once")
+
+    headings: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        match = re.match(r"^##(?:\s+(.*))?$", line.strip())
+        if match:
+            heading_text = (match.group(1) or "").strip()
+            headings.append((index, heading_text))
+            if not heading_text:
+                errors.append("empty_level_two_heading")
+
+    for position, (line_index, heading_text) in enumerate(headings):
+        next_index = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
+        section_lines = [line.strip() for line in lines[line_index + 1 : next_index] if line.strip()]
+        if heading_text and not any(not line.startswith("#") for line in section_lines):
+            errors.append(f"level_two_heading_without_body:{heading_text}")
+
+    if summary_text.count("**") % 2:
+        errors.append("unclosed_bold_marker")
+    if len(re.findall(r"(?m)^\s*```", summary_text)) % 2:
+        errors.append("unclosed_code_fence")
+    return list(dict.fromkeys(errors))
+
+
+def _validate_summary_article(summary_text: str, response: ModelResponse | None = None) -> None:
+    errors = _summary_structure_errors(summary_text)
+    if not errors:
+        return
+    kwargs = _model_response_error_kwargs(response) if response else {"output_chars": len(summary_text)}
+    raise InvalidSummaryArticleError(
+        "Generated summary failed structural validation: " + ", ".join(errors),
+        validation_errors=errors,
+        **kwargs,
+    )
+
+
 def summarize_transcript(
     transcript_text: str,
     video_title: str,
     settings: dict[str, str],
     playlist_name: str,
-) -> str:
+) -> GeneratedSummary:
+    article_prompt = _load_prompt(SUMMARY_ARTICLE_PROMPT_PATH)
     chunks = _chunk_text(transcript_text)
     if len(chunks) == 1:
-        summary = _openai_request(
+        response = _openai_request(
             [
                 {
                     "role": "system",
-                    "content": (
-                        "你是一个严谨的中文知识整理助手。请把视频 transcript 整理成结构化中文 Markdown，"
-                        "覆盖：核心结论、关键论点、可执行启发。全程使用简体中文，不要添加未列出的额外章节。"
-                        "第一行必须输出“中文标题：...”，标题需用简体中文概括视频主题；空一行后输出正文。"
-                    ),
+                    "content": article_prompt,
                 },
                 {
                     "role": "user",
                     "content": (
                         f"播放列表：{playlist_name}\n视频标题：{video_title}\n\n"
-                        "请根据下面的 transcript 输出中文 Markdown 摘要：\n\n"
+                        "请根据下面的 transcript 输出文章：\n\n"
                         f"{transcript_text}"
                     ),
                 },
             ],
             settings,
+            max_tokens=SUMMARY_ARTICLE_MAX_TOKENS,
         )
-        return _to_simplified_chinese(summary)
+        summary = _to_simplified_chinese(_strip_required_completion_marker(response, SUMMARY_COMPLETE_MARKER))
+        _validate_summary_article(summary, response)
+        return GeneratedSummary(summary, response)
 
     chunk_summaries = []
+    evidence_prompt = _load_prompt(SUMMARY_EVIDENCE_PROMPT_PATH)
     for index, chunk in enumerate(chunks, start=1):
-        chunk_summary = _openai_request(
+        response = _openai_request(
             [
                 {
                     "role": "system",
-                    "content": "请将 transcript 分段整理成精炼简体中文要点，保留关键信息，不要编造内容。",
+                    "content": evidence_prompt,
                 },
                 {
                     "role": "user",
@@ -1752,31 +2118,34 @@ def summarize_transcript(
                 },
             ],
             settings,
-            max_tokens=900,
+            max_tokens=1600,
         )
+        chunk_summary = _strip_required_completion_marker(response, EVIDENCE_COMPLETE_MARKER)
         chunk_summaries.append(_to_simplified_chinese(chunk_summary))
-    final_summary = _openai_request(
+    response = _openai_request(
         [
             {
                 "role": "system",
-                "content": (
-                    "你是一个严谨的中文知识整理助手。请把多段摘要合成为最终中文 Markdown，"
-                    "结构只包含：一句话总结、关键观点、可执行启发。全程使用简体中文，不要添加未列出的额外章节。"
-                    "第一行必须输出“中文标题：...”，标题需用简体中文概括视频主题；空一行后输出正文。"
-                ),
+                "content": article_prompt,
             },
             {
                 "role": "user",
                 "content": (
                     f"播放列表：{playlist_name}\n视频标题：{video_title}\n\n"
-                    "请基于这些分段摘要生成最终中文 Markdown：\n\n"
+                    "下面是从同一 transcript 逐段提取并合并的证据表；它是最终文章的唯一事实来源。"
+                    "请基于这些证据生成文章，不要补充证据表之外的内容：\n\n"
                     + "\n\n".join(chunk_summaries)
                 ),
             },
         ],
         settings,
+        max_tokens=SUMMARY_ARTICLE_MAX_TOKENS,
     )
-    return _to_simplified_chinese(final_summary)
+    final_summary = _to_simplified_chinese(
+        _strip_required_completion_marker(response, SUMMARY_COMPLETE_MARKER)
+    )
+    _validate_summary_article(final_summary, response)
+    return GeneratedSummary(final_summary, response)
 
 
 def _parse_retry_datetime(value: Any) -> datetime | None:
@@ -1797,8 +2166,16 @@ def _summary_retry_delay(attempt_count: int) -> int:
     return SUMMARY_RETRY_BACKOFF_SECONDS[min(attempt_count - 1, len(SUMMARY_RETRY_BACKOFF_SECONDS) - 1)]
 
 
+def _retry_delay_for_summary_error(exc: Exception, failure_index: int) -> int:
+    if isinstance(exc, (IncompleteModelResponseError, InvalidSummaryArticleError)):
+        return SUMMARY_INCOMPLETE_RETRY_BACKOFF_SECONDS[
+            min(failure_index, len(SUMMARY_INCOMPLETE_RETRY_BACKOFF_SECONDS) - 1)
+        ]
+    return SUMMARY_RETRY_BACKOFF_SECONDS[min(failure_index, len(SUMMARY_RETRY_BACKOFF_SECONDS) - 1)]
+
+
 def _is_non_retryable_summary_error(exc: Exception) -> bool:
-    if isinstance(exc, ConfigurationError):
+    if isinstance(exc, (ConfigurationError, PolicyModelResponseError)):
         return True
     message = str(exc).lower()
     return any(marker in message for marker in NON_RETRYABLE_SUMMARY_ERROR_MARKERS)
@@ -1816,8 +2193,60 @@ def _append_summary_retry_history(retry_state: dict[str, Any]) -> dict[str, Any]
         return retry_state
     history = list(retry_state.get("history") or [])
     history.append({key: value for key, value in retry_state.items() if key != "history"})
-    retry_state["history"] = history
+    retry_state["history"] = history[-10:]
     return retry_state
+
+
+def _summary_failure_metadata(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ModelResponseError):
+        payload: dict[str, Any] = {
+            "failure_kind": exc.failure_kind,
+            "response_id": exc.response_id,
+            "provider": exc.provider,
+            "provider_status": exc.provider_status,
+            "stop_reason": exc.stop_reason,
+            "output_chars": exc.output_chars,
+            "validation_errors": exc.validation_errors,
+        }
+        if exc.usage:
+            payload["response_usage"] = exc.usage
+        return payload
+    if isinstance(exc, ConfigurationError):
+        return {"failure_kind": "configuration_error"}
+    if is_transient_network_error(exc):
+        return {"failure_kind": "transport_error"}
+    return {"failure_kind": "generation_error"}
+
+
+def _summary_response_metadata(response: ModelResponse | None, summary_text: str) -> dict[str, Any]:
+    if response is None:
+        return {"output_chars": len(summary_text)}
+    payload: dict[str, Any] = {
+        "response_id": response.response_id,
+        "provider": response.provider,
+        "provider_status": response.provider_status,
+        "stop_reason": response.stop_reason,
+        "output_chars": len(summary_text),
+    }
+    if response.usage:
+        payload["response_usage"] = response.usage
+    return payload
+
+
+def _summary_format_warnings(summary_text: str, transcript_text: str) -> list[str]:
+    warnings: list[str] = []
+    output_chars = len(summary_text)
+    if output_chars > len(transcript_text):
+        warnings.append("longer_than_transcript")
+    if len(transcript_text) >= 600 and not 600 <= output_chars <= 1500:
+        warnings.append("outside_preferred_600_1500_chars")
+    heading_count = len(re.findall(r"(?m)^##\s+\S", summary_text))
+    if not 2 <= heading_count <= 4:
+        warnings.append("outside_preferred_2_4_level_two_headings")
+    bold_count = summary_text.count("**") // 2
+    if len(transcript_text) >= 600 and not 10 <= bold_count <= 18:
+        warnings.append("outside_preferred_10_18_bold_phrases")
+    return warnings
 
 
 def summarize_transcript_with_retries(
@@ -1830,9 +2259,13 @@ def summarize_transcript_with_retries(
     max_attempts: int = SUMMARY_MAX_ATTEMPTS,
     run_attempt_limit: int = SUMMARY_INLINE_ATTEMPTS,
     force_retry: bool = False,
+    force_retry_attempts: int = 1,
     clock: Callable[[], datetime] = beijing_now,
     sleep_fn: Callable[[int], None] = time.sleep,
-    summarize_fn: Callable[[str, str, dict[str, str], str], str] = summarize_transcript,
+    summarize_fn: Callable[
+        [str, str, dict[str, str], str],
+        str | GeneratedSummary,
+    ] = summarize_transcript,
 ) -> tuple[str | None, dict[str, Any]]:
     retry_state = dict(existing_retry or {})
     attempt_count = int(retry_state.get("attempt_count") or 0)
@@ -1853,7 +2286,7 @@ def summarize_transcript_with_retries(
             }
         )
         return None, retry_state
-    if first_failed_at and now - first_failed_at > SUMMARY_RETRY_WINDOW:
+    if not force_retry and first_failed_at and now - first_failed_at > SUMMARY_RETRY_WINDOW:
         retry_state.update(
             {
                 "attempt_count": attempt_count,
@@ -1863,29 +2296,52 @@ def summarize_transcript_with_retries(
         )
         return None, retry_state
 
-    remaining_attempts = max_attempts - attempt_count
     if force_retry:
-        remaining_attempts = max(remaining_attempts, 1)
-    attempts_this_run = min(remaining_attempts, run_attempt_limit)
+        attempts_this_run = min(max(force_retry_attempts, 1), run_attempt_limit)
+    else:
+        attempts_this_run = min(max_attempts - attempt_count, run_attempt_limit)
+    next_delay: int | None = None
     for run_attempt_index in range(attempts_this_run):
-        if run_attempt_index > 0:
-            sleep_fn(_summary_retry_delay(attempt_count))
+        if next_delay is not None:
+            sleep_fn(next_delay)
         try:
-            summary_text = summarize_fn(transcript_text, video_title, settings, playlist_name)
+            generated = summarize_fn(transcript_text, video_title, settings, playlist_name)
+            if isinstance(generated, GeneratedSummary):
+                summary_text = generated.text
+                response = generated.response
+            else:
+                summary_text = generated
+                response = None
             attempt_count += 1
             success_retry = {
                 "attempt_count": attempt_count,
                 "last_success_at": clock().isoformat(),
                 "last_error": None,
+                "failure_kind": None,
+                "validation_errors": [],
+                "format_warnings": _summary_format_warnings(summary_text, transcript_text),
+                **_summary_response_metadata(response, summary_text),
             }
             if retry_state.get("history"):
                 success_retry["history"] = retry_state["history"]
+            if retry_state.get("attempt_history"):
+                success_retry["attempt_history"] = retry_state["attempt_history"]
             return summary_text, success_retry
         except Exception as exc:  # noqa: BLE001
             attempt_count += 1
             now = clock()
             if first_failed_at is None:
                 first_failed_at = now
+            failure_metadata = _summary_failure_metadata(exc)
+            attempt_history = list(retry_state.get("attempt_history") or [])
+            attempt_history.append(
+                {
+                    "attempt": attempt_count,
+                    "attempted_at": now.isoformat(),
+                    "outcome": "failure",
+                    **failure_metadata,
+                }
+            )
             retry_state.update(
                 {
                     "attempt_count": attempt_count,
@@ -1894,6 +2350,8 @@ def summarize_transcript_with_retries(
                     "last_error": str(exc),
                     "stopped_reason": None,
                     "next_step": "retry_pending_summaries",
+                    "attempt_history": attempt_history[-10:],
+                    **failure_metadata,
                 }
             )
 
@@ -1902,22 +2360,26 @@ def summarize_transcript_with_retries(
                 retry_state["next_step"] = "manual_review"
                 retry_state.pop("next_retry_after", None)
                 break
-            if attempt_count >= max_attempts:
+            if not force_retry and attempt_count >= max_attempts:
                 retry_state["stopped_reason"] = "max_attempts"
                 retry_state["next_step"] = "manual_review"
                 retry_state.pop("next_retry_after", None)
                 break
-            if first_failed_at and now - first_failed_at > SUMMARY_RETRY_WINDOW:
+            if not force_retry and first_failed_at and now - first_failed_at > SUMMARY_RETRY_WINDOW:
                 retry_state["stopped_reason"] = "retry_window_exceeded"
                 retry_state["next_step"] = "manual_review"
                 retry_state.pop("next_retry_after", None)
                 break
             if run_attempt_index < attempts_this_run - 1:
+                next_delay = _retry_delay_for_summary_error(exc, run_attempt_index)
                 retry_state["next_retry_after"] = (
-                    now + timedelta(seconds=_summary_retry_delay(attempt_count))
+                    now + timedelta(seconds=next_delay)
                 ).isoformat()
                 retry_state["next_step"] = "retry_after_backoff"
             else:
+                if force_retry:
+                    retry_state["stopped_reason"] = "max_attempts"
+                    retry_state["next_step"] = "manual_review"
                 retry_state.pop("next_retry_after", None)
 
     return None, retry_state
@@ -1938,10 +2400,7 @@ def summarize_daily_overview(
         [
             {
                 "role": "system",
-                "content": (
-                    "你是一个中文知识编辑，请把多条视频摘要整理成每日总览 Markdown。"
-                    "输出结构包含：今日概览、跨视频主题、逐条摘要、建议优先观看。"
-                ),
+                "content": _load_prompt(DAILY_OVERVIEW_PROMPT_PATH),
             },
             {
                 "role": "user",
@@ -1953,7 +2412,7 @@ def summarize_daily_overview(
             },
         ],
         settings,
-    )
+    ).text
 
 
 def build_video_summary_markdown(
@@ -2070,8 +2529,8 @@ def write_video_outputs(
                 display_title=display_title,
             )
         )
-        summary_path.write_text(summary_markdown, encoding="utf-8")
-        legacy_report.write_text(summary_markdown, encoding="utf-8")
+        _atomic_write_text(legacy_report, summary_markdown)
+        _atomic_write_text(summary_path, summary_markdown)
     else:
         summary_path.unlink(missing_ok=True)
         legacy_report.unlink(missing_ok=True)
@@ -2264,6 +2723,7 @@ def retry_pending_summaries(
     video_id: str | None = None,
     *,
     force_summary_retry: bool = False,
+    regenerate_all: bool = False,
 ) -> dict[str, Any]:
     run_dir = config.output_root_path / target_date.isoformat()
     manifest_path = run_dir / "manifest.json"
@@ -2279,16 +2739,27 @@ def retry_pending_summaries(
     selected_ids = {video_id} if video_id else None
     updated_processed: list[dict[str, Any]] = []
     retried_count = 0
+    regenerated_success_count = 0
+    regeneration_failed_count = 0
     for video in processed_videos:
-        should_retry = video.get("processing_status") != "summary_ready"
+        should_retry = regenerate_all or video.get("processing_status") != "summary_ready"
         if selected_ids is not None:
-            should_retry = video.get("id") in selected_ids
+            should_retry = should_retry and video.get("id") in selected_ids
         if not should_retry:
             updated_processed.append(video)
             continue
 
         transcript_path = run_dir / str(video.get("transcript_path") or "")
         if not transcript_path.exists():
+            if regenerate_all:
+                regeneration_failed_count += 1
+                updated_processed.append(
+                    {
+                        **video,
+                        "summary_regeneration_error": f"Missing transcript file: {transcript_path}",
+                    }
+                )
+                continue
             updated_processed.append(
                 {
                     **video,
@@ -2319,14 +2790,18 @@ def retry_pending_summaries(
             config.playlist_name,
             existing_retry=merged.get("summary_retry") or {},
             max_attempts=SUMMARY_MAX_ATTEMPTS,
-            run_attempt_limit=1,
-            force_retry=force_summary_retry,
+            run_attempt_limit=SUMMARY_INLINE_ATTEMPTS if regenerate_all else 1,
+            force_retry=force_summary_retry or regenerate_all,
+            force_retry_attempts=SUMMARY_INLINE_ATTEMPTS if regenerate_all else 1,
         )
         merged["processing_metrics"]["summary_seconds"] = _duration_seconds(summary_started)
         merged["summary_retry"] = summary_retry
         if int(summary_retry.get("attempt_count") or 0) > previous_attempt_count:
             retried_count += 1
         if summary_text is not None:
+            merged.pop("summary_regeneration_error", None)
+            if regenerate_all:
+                regenerated_success_count += 1
             updated_processed.append(
                 write_video_outputs(
                     run_dir,
@@ -2336,6 +2811,16 @@ def retry_pending_summaries(
                     summary_status="summary_ready",
                     summary_error=None,
                 )
+            )
+        elif regenerate_all:
+            regeneration_failed_count += 1
+            updated_processed.append(
+                {
+                    **video,
+                    "summary_retry": summary_retry,
+                    "summary_regeneration_error": summary_retry.get("last_error")
+                    or summary_retry.get("stopped_reason"),
+                }
             )
         else:
             updated_processed.append(
@@ -2373,6 +2858,9 @@ def retry_pending_summaries(
     (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
     save_state(update_state(load_state(), target_date, updated_processed))
     manifest["retried_summary_count"] = retried_count
+    if regenerate_all:
+        manifest["regenerated_summary_count"] = regenerated_success_count
+        manifest["regeneration_failed_count"] = regeneration_failed_count
     _write_json(manifest_path, manifest)
     return manifest
 
@@ -2488,6 +2976,7 @@ def run_knowledge_digest(
     bootstrap_login: bool = False,
     attach_current_chrome: bool = False,
     retry_summaries: bool = False,
+    regenerate_summaries: bool = False,
     allow_fallback_first_seen: bool = False,
     full_reprocess: bool = False,
     video_id: str | None = None,
@@ -2512,6 +3001,14 @@ def run_knowledge_digest(
             target_date,
             video_id=video_id,
             force_summary_retry=force_summary_retry,
+        )
+    if regenerate_summaries:
+        return retry_pending_summaries(
+            config,
+            target_date,
+            video_id=video_id,
+            force_summary_retry=True,
+            regenerate_all=True,
         )
 
     run_dir = config.output_root_path / target_date.isoformat()
