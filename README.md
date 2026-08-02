@@ -825,6 +825,175 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
   - `summary_error`
   - 各阶段耗时
 
+## Knowledge Site 长期运行：Clash Verge 与 Cloudflare Tunnel
+
+Knowledge Site 的固定公网入口依赖两个后台进程：
+
+```text
+Uvicorn / FastAPI -> 监听 127.0.0.1:8000
+cloudflared       -> 连接 Cloudflare 的 knowledge-site-mac Tunnel
+```
+
+公网请求的正常路径是：
+
+```text
+浏览器
+  -> https://miniaiheadlines.top
+  -> Cloudflare Edge
+  -> 本机 cloudflared
+  -> http://127.0.0.1:8000
+  -> FastAPI
+```
+
+### 为什么 cloudflared 需要绕过 Clash Verge
+
+`cloudflared` 必须主动连接 Cloudflare Tunnel 边缘节点的 `7844` 端口。当前 Clash Verge 使用：
+
+- `mode: global`
+- TUN 模式
+- Fake-IP DNS
+
+没有绕过规则时，`region1.v2.argotunnel.com` 和 `region2.v2.argotunnel.com` 会被映射到 `198.18.1.x` Fake-IP，并进入 Clash 的全局代理线路。当前代理线路无法稳定访问 Cloudflare 所需的 `7844` 端口，因此 Tunnel 无法建立，公网域名会返回 `530`。
+
+当前绕过配置让这两个域名得到真实 Cloudflare IP，并让对应 IP 网段绕过 TUN、直接通过物理网卡连接 Cloudflare。
+
+```mermaid
+flowchart LR
+    A["cloudflared<br/>准备连接 Cloudflare Tunnel"] --> B{"Tunnel 域名如何解析？"}
+
+    B -->|"没有绕过规则"| C["Fake-IP<br/>198.18.1.x"]
+    C --> D["进入 Clash 全局代理"]
+    D --> E["7844 端口不可达"]
+    E --> F["Tunnel 离线<br/>公网返回 530"]
+
+    B -->|"当前绕过规则"| G["真实 Cloudflare IP<br/>198.41.192.x / 198.41.200.x"]
+    G --> H["route-exclude-address<br/>绕过 Clash TUN"]
+    H --> I["物理网卡 en1<br/>直接访问 7844"]
+    I --> J["Cloudflare Tunnel 在线"]
+    J --> K["公网请求转发到<br/>127.0.0.1:8000"]
+```
+
+Cloudflare 官方列出的 Tunnel 必需目的地正是 `region1.v2.argotunnel.com` 和 `region2.v2.argotunnel.com`，文档列出的 IPv4 地址分别位于 `198.41.192.x` 和 `198.41.200.x`；当前绕过规则覆盖这两个 `/24` 网段。Tunnel 连接使用 TCP 或 UDP `7844`，详见 [Cloudflare Tunnel 防火墙要求](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/)。
+
+### 绕过规则具体写在哪里
+
+这里有三层文件，职责不同：
+
+| 层级 | 当前文件 | 用途 | 是否是长期事实来源 |
+| --- | --- | --- | --- |
+| 订阅绑定关系 | `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml` | 记录当前订阅 `SSW` 使用哪个 Merge 配置 | 是 |
+| 专属 Merge 配置 | `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/m8l041vQrk0n.yaml` | 保存需要在订阅之上合并的绕过规则 | **是，最重要** |
+| 最终运行配置 | `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml` | Clash Verge 根据订阅、Merge 和应用设置生成，交给 Mihomo 运行 | 否，可以被重新生成 |
+
+当前绑定关系是：
+
+```text
+当前远程订阅 SSW
+  UID: RfhF3VpGdLQF
+  订阅文件: RfhF3VpGdLQF.yaml
+  Merge UID: m8l041vQrk0n
+  Merge 文件: m8l041vQrk0n.yaml
+```
+
+注意：这里使用的是 `SSW` 订阅专属的 `m8l041vQrk0n.yaml`，不是全局的 `profiles/Merge.yaml`。
+
+```mermaid
+flowchart TD
+    A["远程订阅 SSW<br/>RfhF3VpGdLQF.yaml"]
+    B["profiles.yaml<br/>记录当前订阅与 Merge 的绑定"]
+    C["专属 Merge<br/>m8l041vQrk0n.yaml"]
+    D["Clash Verge 生成配置"]
+    E["clash-verge.yaml<br/>最终运行配置"]
+    F["Mihomo / Clash TUN"]
+    G["cloudflared 得到真实 IP<br/>并绕过 TUN"]
+
+    B --> A
+    B --> C
+    A --> D
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+
+    U["普通订阅更新"] -->|"只替换远程订阅内容"| A
+    U -.->|"不会正常覆盖"| C
+```
+
+专属 Merge 文件当前包含：
+
+```yaml
+dns:
+  fake-ip-filter:
+  - region1.v2.argotunnel.com
+  - region2.v2.argotunnel.com
+
+tun:
+  route-exclude-address:
+  - 198.41.192.0/24
+  - 198.41.200.0/24
+```
+
+两部分配置分别解决两个问题：
+
+| 配置 | 解决的问题 |
+| --- | --- |
+| `dns.fake-ip-filter` | 防止两个 Tunnel 域名被解析成 `198.18.1.x` Fake-IP |
+| `tun.route-exclude-address` | 让真实 Cloudflare IP 绕过 Clash TUN，直接走物理网卡 |
+
+### 哪些操作会让规则保留或消失
+
+| 场景 | 规则是否保留 | 原因或注意事项 |
+| --- | --- | --- |
+| 普通订阅自动更新 | 通常保留 | 更新远程订阅文件，不会正常覆盖独立的专属 Merge 文件 |
+| 电脑重启 | 保留 | Merge 文件和 `profiles.yaml` 都持久保存在磁盘上 |
+| Clash Verge 常规应用升级 | 通常保留 | 常规升级替换应用本体，一般保留 `Application Support` 数据 |
+| 重新生成 `clash-verge.yaml` | 保留 | 只要 Merge 绑定仍在，最终配置就会从订阅和专属 Merge 重新生成 |
+| 切换到另一个 Profile | 当前规则不生效 | 其他 Profile 不一定绑定 `m8l041vQrk0n` |
+| 删除并重新导入 `SSW` | 可能丢失绑定 | 新导入的订阅可能获得新的 UID 和新的增强配置关联 |
+| 手动取消专属 Merge 关联 | 不生效 | `profiles.yaml` 不再把当前订阅和该 Merge UID 关联 |
+| 重置 Clash 配置、清除应用数据或彻底卸载 | 会丢失 | `Application Support` 中的配置文件会被删除 |
+| Clash 大版本配置迁移异常 | 有小概率失效 | 需要重新检查 Merge 绑定和最终生成配置 |
+
+因此，更准确的结论是：
+
+> 当前规则可以承受普通订阅更新、常规 Clash 升级和电脑重启，但它不是不可删除的系统规则。删除或重新导入订阅、解除 Merge 绑定、清除 Clash 数据时，都需要重新检查。
+
+当前 Clash Verge 的 `enable_auto_launch` 是 `false`。电脑重启后，如果 Clash 没有启动，cloudflared 会直接使用正常网络；以后手动启动 Clash 时，它会加载当前订阅及专属 Merge。cloudflared 自身由 LaunchAgent 保持运行，网络路径短暂变化时会自动重新连接。
+
+### 如何确认绕过规则仍然有效
+
+先确认持久 Merge 文件和最终配置都包含规则：
+
+```bash
+rg -n 'region[12]\.v2\.argotunnel\.com|198\.41\.(192|200)\.0/24' \
+  "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/m8l041vQrk0n.yaml" \
+  "$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml"
+```
+
+再检查 DNS。正常应返回 `198.41.192.x` 或 `198.41.200.x`，不应返回 `198.18.1.x`：
+
+```bash
+dig +short region1.v2.argotunnel.com
+dig +short region2.v2.argotunnel.com
+```
+
+检查真实 Cloudflare IP 的路由。正常应看到物理网卡，例如 `interface: en1`，不应是 Clash 的 `utun`：
+
+```bash
+route -n get 198.41.192.67 | awk '/gateway:|interface:/'
+```
+
+最后确认 Knowledge Site：
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+pgrep -x cloudflared
+curl -sS -o /dev/null -w '%{http_code}\n' https://miniaiheadlines.top/
+curl -sS -o /dev/null -w '%{http_code}\n' https://www.miniaiheadlines.top/
+```
+
+未登录时两个公网地址正常应返回 `303`，然后跳转到登录页。如果返回 `530`，先检查本机 `8000` 端口，再检查 cloudflared 日志和上述 Clash 绕过规则。
+
 ## 这个项目现在的实际结论
 
 截至目前，这个项目已经验证过下面这些关键能力：
