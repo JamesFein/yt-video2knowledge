@@ -62,7 +62,6 @@ SUMMARY_COMPLETE_MARKER = "<!-- SUMMARY_COMPLETE -->"
 EVIDENCE_COMPLETE_MARKER = "<!-- EVIDENCE_COMPLETE -->"
 SUMMARY_ARTICLE_PROMPT_PATH = Path("production/summary-article-v5.md")
 SUMMARY_EVIDENCE_PROMPT_PATH = Path("production/summary-evidence-v1.md")
-DAILY_OVERVIEW_PROMPT_PATH = Path("production/daily-overview-v1.md")
 _SIMPLIFIED_CHINESE_CONVERTER = OpenCC("t2s")
 NON_RETRYABLE_SUMMARY_ERROR_MARKERS = (
     "missing runtime configuration",
@@ -92,8 +91,10 @@ TRANSIENT_NETWORK_ERROR_MARKERS = (
 YT_DLP_MEDIA_FORBIDDEN_MARKERS = (
     "http error 403",
     "unable to download video data",
+    "sign in to confirm you’re not a bot",
+    "sign in to confirm you're not a bot",
 )
-YT_DLP_AUDIO_FALLBACK_FORMATS = ("251", "140", "250", "249", "bestaudio/best")
+YT_DLP_AUDIO_FALLBACK_FORMATS = ("251", "140", "250", "249", "92", "93", "94", "bestaudio/best")
 DEVTOOLS_ACTIVE_PORT_CANDIDATES = [
     Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort",
     Path.home() / "Library/Application Support/Google/Chrome/Default/DevToolsActivePort",
@@ -432,7 +433,7 @@ def _run_command(cmd: list[str], timeout: int = 120, cwd: Path | None = None) ->
 
 
 def _yt_dlp_base(browser: str | None = None, cookies_path: Path | None = None) -> list[str]:
-    cmd = ["yt-dlp", "--no-warnings"]
+    cmd = [os.environ.get("YT_DLP_BIN") or "yt-dlp", "--no-warnings"]
     if cookies_path:
         cmd.extend(["--cookies", str(cookies_path)])
     elif browser:
@@ -449,6 +450,15 @@ def _cleanup_partial_audio_downloads(output_dir: Path) -> None:
     for path in output_dir.glob("source_audio.*"):
         if path.suffix in {".part", ".ytdl"}:
             path.unlink(missing_ok=True)
+
+
+def _find_existing_source_audio(output_dir: Path) -> Path | None:
+    candidates = [
+        path
+        for path in output_dir.glob("source_audio.*")
+        if path.suffix not in {".part", ".ytdl", ".wav"} and not path.name.endswith(".json")
+    ]
+    return candidates[0] if candidates else None
 
 
 def _download_audio_format(
@@ -469,7 +479,13 @@ def _download_audio_format(
             f"https://www.youtube.com/watch?v={video_id}",
         ]
     )
-    _run_command(cmd, timeout=600)
+    try:
+        _run_command(cmd, timeout=600)
+    except ExternalCommandError as exc:
+        if "http error 403" not in str(exc).lower():
+            raise
+        _cleanup_partial_audio_downloads(output_dir)
+        _run_command(cmd, timeout=600)
     candidates = [
         path
         for path in output_dir.glob("source_audio.*")
@@ -612,6 +628,10 @@ def download_audio(
     cookies_path: Path | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    existing_audio = _find_existing_source_audio(output_dir)
+    if existing_audio:
+        return existing_audio
+
     attempts: list[tuple[str, str]] = []
 
     credential_modes: list[tuple[str | None, Path | None]] = []
@@ -2385,36 +2405,6 @@ def summarize_transcript_with_retries(
     return None, retry_state
 
 
-def summarize_daily_overview(
-    target_date: date,
-    processed_videos: list[dict[str, Any]],
-    settings: dict[str, str],
-    playlist_name: str,
-) -> str:
-    video_briefs = []
-    for item in processed_videos:
-        video_briefs.append(
-            f"标题：{item['title']}\n频道：{item['channel_name']}\n摘要：{item['summary_text']}\n"
-        )
-    return _openai_request(
-        [
-            {
-                "role": "system",
-                "content": _load_prompt(DAILY_OVERVIEW_PROMPT_PATH),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"播放列表：{playlist_name}\n目标日期：{target_date.isoformat()}\n\n"
-                    "请整理下面这些单视频摘要：\n\n"
-                    + "\n---\n".join(video_briefs)
-                ),
-            },
-        ],
-        settings,
-    ).text
-
-
 def build_video_summary_markdown(
     video: dict[str, Any],
     summary_text: str,
@@ -2438,59 +2428,6 @@ def build_video_summary_markdown(
         "## 原始 Transcript\n"
         f"- 完整文本: `{transcript_relative_path}`\n"
     )
-
-
-def build_daily_overview_markdown(
-    target_date: date,
-    playlist_name: str,
-    processed_videos: list[dict[str, Any]],
-    failed_videos: list[dict[str, Any]],
-    needs_review: list[dict[str, Any]],
-    overview_summary: str,
-    reused_summary_ready_count: int = 0,
-) -> str:
-    summary_ready_videos = [item for item in processed_videos if item.get("processing_status") == "summary_ready"]
-    pending_summary_videos = [item for item in processed_videos if item.get("processing_status") == "pending_summary"]
-    header = [
-        f"# {playlist_name} Daily Overview",
-        "",
-        f"- 目标日期: {target_date.isoformat()} (Asia/Shanghai)",
-        f"- 成功处理视频数: {len(processed_videos)}",
-        f"- 已完成总结视频数: {len(summary_ready_videos)}",
-        f"- 待补总结视频数: {len(pending_summary_videos)}",
-        f"- Transcript 失败视频数: {len(failed_videos)}",
-        f"- 待人工复核视频数: {len(needs_review)}",
-        f"- 已复用既有成功视频数: {reused_summary_ready_count}",
-        "",
-        "## 今日概览",
-        overview_summary.strip() or "无摘要",
-        "",
-        "## 单视频摘要",
-    ]
-    for item in summary_ready_videos:
-        header.append(f"### {item['title']}")
-        header.append(f"- 频道: {item.get('channel_name') or 'Unknown'}")
-        header.append(f"- 链接: {item['url']}")
-        header.append(f"- 加入时间: {item.get('playlist_added_text') or '未解析到'}")
-        header.append(f"- 文档: `videos/{item['id']}/summary.zh-CN.md`")
-        header.append("")
-    if pending_summary_videos:
-        header.append("## 待补总结")
-        for item in pending_summary_videos:
-            header.append(f"- {item['title']} ({item['url']})：transcript 已完成，等待补跑总结。")
-        header.append("")
-    if failed_videos:
-        header.append("## Transcript 失败")
-        for item in failed_videos:
-            header.append(f"- {item['title']} ({item['url']})：{item.get('error') or 'Unknown error'}")
-        header.append("")
-    if needs_review:
-        header.append("## 待人工复核")
-        for item in needs_review:
-            header.append(
-                f"- {item['title']} ({item['url']})：未解析到加入播放列表时间，raw=`{item.get('playlist_added_text') or 'N/A'}`"
-            )
-    return "\n".join(header).strip() + "\n"
 
 
 def _duration_seconds(started_at: float) -> float:
@@ -2674,49 +2611,6 @@ def _build_manifest(
     return manifest
 
 
-def _fallback_daily_overview_summary(processed_videos: list[dict[str, Any]]) -> str:
-    summary_ready_videos = _summary_ready_videos(processed_videos)
-    if summary_ready_videos:
-        return "\n".join(
-            f"- {item['title']}: {item.get('summary_text', '')[:120]}..."
-            for item in summary_ready_videos
-        )
-    if processed_videos:
-        return "今天的视频 transcript 已完成，但有部分或全部视频等待补跑总结。"
-    return "今天没有匹配到成功处理的视频。"
-
-
-def _build_daily_overview_text(
-    target_date: date,
-    config: DigestConfig,
-    processed_videos: list[dict[str, Any]],
-    failed_videos: list[dict[str, Any]],
-    needs_review: list[dict[str, Any]],
-    settings: dict[str, str],
-    *,
-    reused_summary_ready_count: int = 0,
-) -> str:
-    summary_ready_videos = _summary_ready_videos(processed_videos)
-    if summary_ready_videos:
-        try:
-            overview_summary = summarize_daily_overview(target_date, summary_ready_videos, settings, config.playlist_name)
-        except DigestError:
-            overview_summary = _fallback_daily_overview_summary(processed_videos)
-    elif processed_videos:
-        overview_summary = "今天的视频 transcript 已完成，但有部分或全部视频等待补跑总结。"
-    else:
-        overview_summary = "今天没有匹配到成功处理的视频。"
-    return build_daily_overview_markdown(
-        target_date,
-        config.playlist_name,
-        processed_videos,
-        failed_videos,
-        needs_review,
-        overview_summary,
-        reused_summary_ready_count=reused_summary_ready_count,
-    )
-
-
 def retry_pending_summaries(
     config: DigestConfig,
     target_date: date,
@@ -2845,17 +2739,6 @@ def retry_pending_summaries(
         incremental_stats=manifest.get("incremental_stats"),
     )
     _write_json(manifest_path, manifest)
-    reused_summary_ready_count = int(manifest["incremental_stats"].get("skipped_summary_ready_count", 0))
-    daily_overview = _build_daily_overview_text(
-        target_date,
-        config,
-        updated_processed,
-        failed_videos,
-        needs_review,
-        settings,
-        reused_summary_ready_count=reused_summary_ready_count,
-    )
-    (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
     save_state(update_state(load_state(), target_date, updated_processed))
     manifest["retried_summary_count"] = retried_count
     if regenerate_all:
@@ -2952,17 +2835,6 @@ def adopt_summary_for_video(
     manifest["adopted_summary_count"] = 1
     _write_json(manifest_path, manifest)
 
-    reused_summary_ready_count = int(manifest["incremental_stats"].get("skipped_summary_ready_count", 0))
-    daily_overview = build_daily_overview_markdown(
-        target_date,
-        config.playlist_name,
-        updated_processed,
-        failed_videos,
-        needs_review,
-        _fallback_daily_overview_summary(updated_processed),
-        reused_summary_ready_count=reused_summary_ready_count,
-    )
-    (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
     save_state(update_state(load_state(), target_date, updated_processed))
     _write_json(manifest_path, manifest)
     return manifest
@@ -3020,11 +2892,21 @@ def run_knowledge_digest(
 
     browser_mode = "managed"
     yt_dlp_cookies_path: Path | None = None
+    delete_yt_dlp_cookies = False
     run_mode = "full"
     incremental_stats = _default_incremental_stats()
 
     try:
         if video_id:
+            existing_cookie_file = PLAYWRIGHT_TMP_DIR / "yt-dlp-cookies.txt"
+            if existing_cookie_file.exists() and existing_cookie_file.stat().st_size > 0:
+                browser_mode = "existing-cookies"
+                yt_dlp_cookies_path = existing_cookie_file
+            else:
+                fetch_result = fetch_playlist_entries(config, attach_current_chrome=attach_current_chrome, interactive_login=False)
+                browser_mode = fetch_result.browser_mode
+                yt_dlp_cookies_path = fetch_result.cookie_file
+                delete_yt_dlp_cookies = yt_dlp_cookies_path is not None
             entries = [{"id": video_id, "url": f"https://www.youtube.com/watch?v={video_id}", "title": video_id}]
             needs_review: list[dict[str, Any]] = []
             incremental_stats = _default_incremental_stats(selected_count=1, to_process_count=1)
@@ -3045,6 +2927,7 @@ def run_knowledge_digest(
                 raise
             browser_mode = fetch_result.browser_mode
             yt_dlp_cookies_path = fetch_result.cookie_file
+            delete_yt_dlp_cookies = yt_dlp_cookies_path is not None
             selected_entries, needs_review = select_entries_for_processing(
                 fetch_result.entries,
                 target_date,
@@ -3173,18 +3056,6 @@ def run_knowledge_digest(
             processed_videos,
             failed_videos,
         )
-        reused_summary_ready_count = incremental_stats.get("skipped_summary_ready_count", 0)
-        daily_overview = _build_daily_overview_text(
-            target_date,
-            config,
-            merged_processed_videos,
-            merged_failed_videos,
-            needs_review,
-            settings,
-            reused_summary_ready_count=reused_summary_ready_count,
-        )
-        (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
-
         manifest = _build_manifest(
             target_date,
             config,
@@ -3202,5 +3073,5 @@ def run_knowledge_digest(
             manifest = retry_pending_summaries(config, target_date)
         return manifest
     finally:
-        if yt_dlp_cookies_path is not None:
+        if delete_yt_dlp_cookies and yt_dlp_cookies_path is not None:
             yt_dlp_cookies_path.unlink(missing_ok=True)

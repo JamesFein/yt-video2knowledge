@@ -3,8 +3,8 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "把 knowledge 播放列表里 2026-03-21 新加进去的视频都处理掉，给我中文日报，同时每条视频都要保留原始 transcript。",
-      "expected_output": "按北京时间 2026-03-21 严格筛出命中的 playlist items，生成当天的 daily overview，并为每条命中视频输出 summary.zh-CN.md 和 transcript.original.txt。",
+      "prompt": "把 knowledge 播放列表里 2026-03-21 新加进去的视频都处理掉，生成中文摘要，同时每条视频都要保留原始 transcript。",
+      "expected_output": "按北京时间 2026-03-21 严格筛出命中的 playlist items，并为每条命中视频输出 summary.zh-CN.md 和 transcript.original.txt，不额外生成每日总览。",
       "files": []
     },
     {
@@ -39,7 +39,7 @@
     },
     {
       "id": 7,
-      "prompt": "用 youtube-ai-digest 处理一下 knowledge 播放列表昨天新增的视频，给我中文日报。这个请求是我从 OpenClaw GUI 里直接发出来的。",
+      "prompt": "用 youtube-ai-digest 处理一下 knowledge 播放列表昨天新增的视频，生成中文摘要。这个请求是我从 OpenClaw GUI 里直接发出来的。",
       "expected_output": "Skill 应被自然触发，并沿用固定仓库路径执行整批目标日期处理，而不是尝试临时拼出另一套独立流程。",
       "files": []
     },
@@ -57,7 +57,7 @@
     },
     {
       "id": 10,
-      "prompt": "帮我聊聊这个 YouTube 视频到底讲得好不好，不用下载、不要 transcript，也不用日报。",
+      "prompt": "帮我聊聊这个 YouTube 视频到底讲得好不好，不用下载、不要 transcript，也不用生成摘要文件。",
       "expected_output": "这个近邻场景不该触发 youtube-ai-digest，因为它只是普通 YouTube 内容讨论，不是当前仓库的本地摘要流程。",
       "files": []
     }

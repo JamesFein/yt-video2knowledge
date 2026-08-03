@@ -5,7 +5,7 @@
 {% block content %}
   <section class="page-heading">
     <h1>日期</h1>
-    <p>按日期整理的知识日报与视频摘要。</p>
+    <p>按日期整理的视频摘要。</p>
   </section>
 
   {% if days %}
@@ -14,7 +14,6 @@
         <article class="day-row">
           <div class="row-main">
             <a class="row-title" href="/days/{{ day.day_date }}">{{ day.day_date }}</a>
-            <p>{{ day.summary_excerpt or "暂无日报内容" }}</p>
           </div>
           <span class="count">{{ day.video_count }} 个视频</span>
         </article>

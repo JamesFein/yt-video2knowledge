@@ -13,7 +13,6 @@ from knowledge_digest import (
     _build_manifest,
     _json_default,
     _write_json,
-    build_daily_overview_markdown,
     load_config,
     parse_target_date,
 )
@@ -115,22 +114,7 @@ def recover_run(target_date_text: str) -> dict:
         run_mode="recovered",
         incremental_stats=incremental_stats,
     )
-    overview_summary = "\n".join(
-        f"- {item['title']}: {item.get('summary_text', '')[:120]}..."
-        for item in processed_videos
-        if item.get("processing_status") == "summary_ready"
-    )
-    daily_overview = build_daily_overview_markdown(
-        target_date,
-        config.playlist_name,
-        processed_videos,
-        failed_videos,
-        needs_review,
-        overview_summary or "从现有单视频摘要恢复日报索引。",
-        reused_summary_ready_count=incremental_stats["skipped_summary_ready_count"],
-    )
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "daily-overview.zh-CN.md").write_text(daily_overview, encoding="utf-8")
     _write_json(run_dir / "manifest.json", manifest)
     return manifest
 

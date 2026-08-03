@@ -144,16 +144,14 @@ def _sync_day(
     }
     failed_ids = set(manifest_failures)
 
-    overview = _to_simplified_chinese(_read_text(day_dir / "daily-overview.zh-CN.md"))
     conn.execute(
         """
         INSERT INTO days (day_date, daily_summary_markdown, synced_at)
-        VALUES (?, ?, ?)
+        VALUES (?, '', ?)
         ON CONFLICT(day_date) DO UPDATE SET
-            daily_summary_markdown = excluded.daily_summary_markdown,
             synced_at = excluded.synced_at
         """,
-        (day_date, overview, synced_at),
+        (day_date, synced_at),
     )
     conn.execute("DELETE FROM day_videos WHERE day_date = ?", (day_date,))
 

@@ -65,7 +65,6 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             settings = make_settings(root)
             day_dir = root / "data" / "runs" / "2026-06-01"
             day_dir.mkdir(parents=True)
-            (day_dir / "daily-overview.zh-CN.md").write_text("# Daily\n\nOverview", encoding="utf-8")
             write_video(day_dir, "ready", summary="## 一句话总结\n\nReady summary", thumbnail_ext=".jpg")
             write_video(day_dir, "pending", status="pending_summary", summary=None)
             write_json(
@@ -90,7 +89,7 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             conn = connect_db(settings.db_path)
             try:
                 day = conn.execute("SELECT * FROM days WHERE day_date = '2026-06-01'").fetchone()
-                self.assertEqual(day["daily_summary_markdown"], "# Daily\n\nOverview")
+                self.assertEqual(day["daily_summary_markdown"], "")
                 videos = conn.execute("SELECT * FROM videos").fetchall()
                 self.assertEqual([row["video_id"] for row in videos], ["ready"])
                 self.assertEqual(videos[0]["title"], "Video ready")
@@ -111,7 +110,7 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_sync_converts_page_content_to_simplified_chinese(self) -> None:
+    def test_sync_converts_video_content_to_simplified_chinese(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings = make_settings(root)
@@ -120,10 +119,6 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             traditional_title = (
                 "AI時代別只會下指令！矽谷前機器學習副總揭秘「3大管理盲點」，"
                 "讓你告別用舊方法學新工具"
-            )
-            (day_dir / "daily-overview.zh-CN.md").write_text(
-                f"# Daily\n\n日期 / 2026-06-19 / {traditional_title}",
-                encoding="utf-8",
             )
             write_video(
                 day_dir,
@@ -140,11 +135,8 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
 
             conn = connect_db(settings.db_path)
             try:
-                day = conn.execute("SELECT * FROM days WHERE day_date = '2026-06-19'").fetchone()
                 video = conn.execute("SELECT * FROM videos WHERE video_id = 'ready'").fetchone()
 
-                self.assertIn("AI时代别只会下指令", day["daily_summary_markdown"])
-                self.assertNotIn("時代", day["daily_summary_markdown"])
                 self.assertIn("机器学习副总", video["title"])
                 self.assertNotIn("機器學習副總", video["title"])
                 self.assertEqual(video["channel_name"], "领导影响力学院")
@@ -159,7 +151,6 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             settings = make_settings(root)
             day_dir = root / "data" / "runs" / "2026-06-01"
             day_dir.mkdir(parents=True)
-            (day_dir / "daily-overview.zh-CN.md").write_text("# Daily\n\nOverview", encoding="utf-8")
             write_video(
                 day_dir,
                 "ready",
@@ -187,7 +178,6 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
             first_day = runs / "2026-06-02"
             second_day = runs / "2026-06-03"
             empty_day.mkdir(parents=True)
-            (empty_day / "daily-overview.zh-CN.md").write_text("Empty day", encoding="utf-8")
             first_day.mkdir(parents=True)
             second_day.mkdir(parents=True)
             write_video(first_day, "shared", summary="## First\n\nSummary")
@@ -204,6 +194,38 @@ class KnowledgeSiteSyncTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM day_videos WHERE day_date = '2026-06-01'"
                 ).fetchone()[0]
                 self.assertEqual(empty_count, 0)
+            finally:
+                conn.close()
+
+    def test_resync_preserves_legacy_daily_summary_and_ignores_source_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = make_settings(root)
+            day_dir = root / "data" / "runs" / "2026-06-01"
+            day_dir.mkdir(parents=True)
+            write_video(day_dir, "ready", summary="## Ready\n\nSummary")
+            sync_knowledge_site(settings)
+
+            conn = connect_db(settings.db_path)
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE days SET daily_summary_markdown = ? WHERE day_date = ?",
+                        ("legacy database overview", "2026-06-01"),
+                    )
+            finally:
+                conn.close()
+
+            (day_dir / "daily-overview.zh-CN.md").write_text(
+                "source overview must be ignored",
+                encoding="utf-8",
+            )
+            sync_knowledge_site(settings)
+
+            conn = connect_db(settings.db_path)
+            try:
+                day = conn.execute("SELECT * FROM days WHERE day_date = '2026-06-01'").fetchone()
+                self.assertEqual(day["daily_summary_markdown"], "legacy database overview")
             finally:
                 conn.close()
 

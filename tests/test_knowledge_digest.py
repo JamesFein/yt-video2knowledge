@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 import json
+import os
 import subprocess
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import run_knowledge_digest as cli_module
 import knowledge_digest as knowledge_digest_module
+import recover_run_manifest as recover_module
 from generate_report import generate_markdown
 from knowledge_digest import (
     BEIJING_TZ,
@@ -621,6 +623,55 @@ class DownloadAudioTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][calls[0].index("-f") + 1], "bestaudio/best")
 
+    def test_download_audio_reuses_existing_source_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            existing = output_dir / "source_audio.webm"
+            existing.write_text("audio", encoding="utf-8")
+
+            with mock.patch.object(knowledge_digest_module, "_run_command") as run_command:
+                result = knowledge_digest_module.download_audio("video123", output_dir, cookies_path=Path("cookies.txt"))
+
+        self.assertEqual(result, existing)
+        run_command.assert_not_called()
+
+    def test_download_audio_uses_yt_dlp_bin_env_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            calls = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                calls.append(cmd)
+                (output_dir / "source_audio.webm").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.dict(os.environ, {"YT_DLP_BIN": "/tmp/custom-yt-dlp"}):
+                with mock.patch.object(knowledge_digest_module, "_run_command", side_effect=fake_run_command):
+                    knowledge_digest_module.download_audio("video123", output_dir, browser="chrome")
+
+        self.assertEqual(calls[0][0], "/tmp/custom-yt-dlp")
+
+    def test_download_audio_retries_transient_403_for_same_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            calls = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                calls.append(cmd)
+                if len(calls) == 1:
+                    (output_dir / "source_audio.webm.part").write_text("partial", encoding="utf-8")
+                    raise knowledge_digest_module.ExternalCommandError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+                (output_dir / "source_audio.webm").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.object(knowledge_digest_module, "_run_command", side_effect=fake_run_command):
+                result = knowledge_digest_module.download_audio("video123", output_dir, cookies_path=Path("cookies.txt"))
+
+            self.assertFalse((output_dir / "source_audio.webm.part").exists())
+
+        self.assertEqual(result.name, "source_audio.webm")
+        self.assertEqual(len(calls), 2)
+
     def test_download_audio_retries_403_with_explicit_formats_and_cleans_partials(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
@@ -631,7 +682,7 @@ class DownloadAudioTests(unittest.TestCase):
                 formats.append(format_selector)
                 if len(formats) > 1:
                     self.assertFalse(list(output_dir.glob("*.part")))
-                if format_selector in {"bestaudio/best", "251"}:
+                if format_selector in {"bestaudio/best", "251", "92", "93"}:
                     (output_dir / "source_audio.webm.part").write_text("partial", encoding="utf-8")
                     raise knowledge_digest_module.ExternalCommandError(
                         "ERROR: unable to download video data: HTTP Error 403: Forbidden"
@@ -643,7 +694,35 @@ class DownloadAudioTests(unittest.TestCase):
                 result = knowledge_digest_module.download_audio("video123", output_dir, browser="chrome")
 
         self.assertEqual(result.name, "source_audio.m4a")
-        self.assertEqual(formats, ["bestaudio/best", "251", "140"])
+        self.assertEqual(formats, ["bestaudio/best", "bestaudio/best", "251", "251", "140"])
+
+    def test_download_audio_retries_not_a_bot_with_next_credential_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            cookies_path = output_dir / "cookies.txt"
+            cookies_path.write_text("cookies", encoding="utf-8")
+            calls = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                calls.append(cmd)
+                if "--cookies" in cmd:
+                    raise knowledge_digest_module.ExternalCommandError(
+                        "ERROR: [youtube] video123: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication."
+                    )
+                (output_dir / "source_audio.webm").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.object(knowledge_digest_module, "_run_command", side_effect=fake_run_command):
+                result = knowledge_digest_module.download_audio(
+                    "video123",
+                    output_dir,
+                    browser="chrome",
+                    cookies_path=cookies_path,
+                )
+
+        self.assertEqual(result.name, "source_audio.webm")
+        self.assertIn("--cookies", calls[0])
+        self.assertIn("--cookies-from-browser", calls[-1])
 
     def test_download_audio_reports_all_fallback_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -661,6 +740,7 @@ class DownloadAudioTests(unittest.TestCase):
         self.assertIn("bestaudio/best", message)
         self.assertIn("251", message)
         self.assertIn("140", message)
+        self.assertIn("94", message)
         self.assertIn("250", message)
         self.assertIn("249", message)
 
@@ -789,26 +869,6 @@ class SummarizeTranscriptTests(unittest.TestCase):
                                     "transcript", "Video", {}, "Knowledge"
                                 )
                     request.assert_not_called()
-
-    def test_daily_overview_uses_prompt_registry_file(self) -> None:
-        captured = []
-
-        def fake_openai_request(messages, settings, max_tokens=1200):
-            captured.append(messages)
-            return knowledge_digest_module.ModelResponse("完成", provider="openai")
-
-        videos = [{"title": "Video", "channel_name": "Channel", "summary_text": "Summary"}]
-        with mock.patch.object(knowledge_digest_module, "_openai_request", side_effect=fake_openai_request):
-            result = knowledge_digest_module.summarize_daily_overview(
-                date(2026, 8, 2), videos, {}, "Knowledge"
-            )
-
-        expected = (
-            knowledge_digest_module.PROMPT_DIR / knowledge_digest_module.DAILY_OVERVIEW_PROMPT_PATH
-        ).read_text(encoding="utf-8").strip()
-        self.assertEqual(result, "完成")
-        self.assertEqual(captured[0][0]["content"], expected)
-
 
 class ModelApiRoutingTests(unittest.TestCase):
     def test_claude_model_uses_anthropic_messages_endpoint(self) -> None:
@@ -964,6 +1024,8 @@ class RetryPendingSummariesTests(unittest.TestCase):
             ready_dir.mkdir(parents=True)
             (pending_dir / "transcript.original.txt").write_text("pending transcript", encoding="utf-8")
             (ready_dir / "transcript.original.txt").write_text("ready transcript", encoding="utf-8")
+            overview_path = run_dir / "daily-overview.zh-CN.md"
+            overview_path.write_text("legacy overview", encoding="utf-8")
             _write_json(
                 run_dir / "manifest.json",
                 {
@@ -1006,14 +1068,14 @@ class RetryPendingSummariesTests(unittest.TestCase):
 
             with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
                 with mock.patch.object(knowledge_digest_module, "summarize_transcript_with_retries", side_effect=fake_retry):
-                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
-                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
-                            with mock.patch.object(knowledge_digest_module, "save_state"):
-                                manifest = retry_pending_summaries(config, target_date)
+                    with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                        with mock.patch.object(knowledge_digest_module, "save_state"):
+                            manifest = retry_pending_summaries(config, target_date)
 
             self.assertEqual(calls, ["Pending"])
             self.assertEqual(manifest["pending_summary_count"], 0)
             self.assertEqual(manifest["summary_ready_count"], 2)
+            self.assertEqual(overview_path.read_text(encoding="utf-8"), "legacy overview")
 
     def test_retry_pending_summaries_can_force_stopped_video_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1062,15 +1124,14 @@ class RetryPendingSummariesTests(unittest.TestCase):
 
             with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
                 with mock.patch.object(knowledge_digest_module, "summarize_transcript_with_retries", side_effect=fake_retry):
-                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
-                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
-                            with mock.patch.object(knowledge_digest_module, "save_state"):
-                                manifest = retry_pending_summaries(
-                                    config,
-                                    target_date,
-                                    video_id="pending",
-                                    force_summary_retry=True,
-                                )
+                    with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                        with mock.patch.object(knowledge_digest_module, "save_state"):
+                            manifest = retry_pending_summaries(
+                                config,
+                                target_date,
+                                video_id="pending",
+                                force_summary_retry=True,
+                            )
 
             self.assertEqual(manifest["pending_summary_count"], 0)
             self.assertEqual(manifest["summary_ready_count"], 1)
@@ -1119,14 +1180,13 @@ class RetryPendingSummariesTests(unittest.TestCase):
 
             with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
                 with mock.patch.object(knowledge_digest_module, "summarize_transcript_with_retries", side_effect=fake_retry):
-                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
-                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
-                            with mock.patch.object(knowledge_digest_module, "save_state"):
-                                manifest = retry_pending_summaries(
-                                    config,
-                                    target_date,
-                                    regenerate_all=True,
-                                )
+                    with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                        with mock.patch.object(knowledge_digest_module, "save_state"):
+                            manifest = retry_pending_summaries(
+                                config,
+                                target_date,
+                                regenerate_all=True,
+                            )
 
             self.assertEqual(manifest["regenerated_summary_count"], 1)
             self.assertEqual(manifest["regeneration_failed_count"], 0)
@@ -1173,20 +1233,19 @@ class RetryPendingSummariesTests(unittest.TestCase):
                     "summarize_transcript_with_retries",
                     return_value=(None, {"attempt_count": 1, "last_error": "API unavailable"}),
                 ):
-                    with mock.patch.object(knowledge_digest_module, "_build_daily_overview_text", return_value="# daily"):
-                        with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
-                            with mock.patch.object(knowledge_digest_module, "save_state"):
-                                manifest = retry_pending_summaries(
-                                    config,
-                                    target_date,
-                                    regenerate_all=True,
-                                )
+                    with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                        with mock.patch.object(knowledge_digest_module, "save_state"):
+                            manifest = retry_pending_summaries(
+                                config,
+                                target_date,
+                                regenerate_all=True,
+                            )
 
             self.assertEqual(summary_path.read_text(encoding="utf-8"), "# Old\n")
             self.assertEqual(manifest["regenerated_summary_count"], 0)
             self.assertEqual(manifest["regeneration_failed_count"], 1)
 
-    def test_adopt_summary_file_marks_pending_video_ready_and_rebuilds_overview(self) -> None:
+    def test_adopt_summary_file_marks_pending_video_ready_without_touching_legacy_overview(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = make_test_config(str(root / "runs"))
@@ -1197,6 +1256,8 @@ class RetryPendingSummariesTests(unittest.TestCase):
             (video_dir / "transcript.original.txt").write_text("pending transcript", encoding="utf-8")
             summary_file = root / "manual-summary.md"
             summary_file.write_text("# Manual Summary\n\n- done", encoding="utf-8")
+            overview_path = run_dir / "daily-overview.zh-CN.md"
+            overview_path.write_text("legacy overview", encoding="utf-8")
             _write_json(
                 run_dir / "manifest.json",
                 {
@@ -1237,8 +1298,7 @@ class RetryPendingSummariesTests(unittest.TestCase):
             self.assertEqual(adopted["summary_source"], "manual")
             self.assertIsNone(adopted["summary_error"])
             self.assertEqual((video_dir / "summary.zh-CN.md").read_text(encoding="utf-8"), "# Manual Summary\n\n- done\n")
-            overview = (run_dir / "daily-overview.zh-CN.md").read_text(encoding="utf-8")
-            self.assertIn("- 待补总结视频数: 0", overview)
+            self.assertEqual(overview_path.read_text(encoding="utf-8"), "legacy overview")
 
 
 class GenerateMarkdownTests(unittest.TestCase):
@@ -1393,6 +1453,44 @@ class YoutubeApiPaginationToleranceTests(unittest.TestCase):
 
 
 class RunKnowledgeDigestRecoveryTests(unittest.TestCase):
+    def test_date_run_does_not_create_or_overwrite_daily_overview(self) -> None:
+        for has_legacy_overview in (False, True):
+            with self.subTest(has_legacy_overview=has_legacy_overview):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    config = make_test_config(str(Path(tmpdir) / "runs"))
+                    target_date = date(2026, 6, 10)
+                    run_dir = config.output_root_path / target_date.isoformat()
+                    run_dir.mkdir(parents=True)
+                    overview_path = run_dir / "daily-overview.zh-CN.md"
+                    if has_legacy_overview:
+                        overview_path.write_text("legacy overview", encoding="utf-8")
+
+                    fetch_result = knowledge_digest_module.PlaylistFetchResult(
+                        entries=[],
+                        cookie_file=None,
+                        browser_mode="managed",
+                    )
+                    with mock.patch.object(knowledge_digest_module, "load_config", return_value=config):
+                        with mock.patch.object(knowledge_digest_module, "resolve_openai_settings", return_value={}):
+                            with mock.patch.object(
+                                knowledge_digest_module,
+                                "fetch_playlist_entries",
+                                return_value=fetch_result,
+                            ):
+                                with mock.patch.object(knowledge_digest_module, "load_state", return_value={}):
+                                    with mock.patch.object(knowledge_digest_module, "save_state"):
+                                        with mock.patch.object(
+                                            knowledge_digest_module,
+                                            "_openai_request",
+                                        ) as model_request:
+                                            knowledge_digest_module.run_knowledge_digest(target_date)
+
+                    model_request.assert_not_called()
+                    if has_legacy_overview:
+                        self.assertEqual(overview_path.read_text(encoding="utf-8"), "legacy overview")
+                    else:
+                        self.assertFalse(overview_path.exists())
+
     def test_transient_playlist_fetch_failure_recovers_existing_pending_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1452,6 +1550,30 @@ class RunKnowledgeDigestRecoveryTests(unittest.TestCase):
                                 knowledge_digest_module.run_knowledge_digest(target_date)
 
             mocked_retry.assert_not_called()
+
+
+class RecoverRunManifestTests(unittest.TestCase):
+    def test_recovery_does_not_create_or_overwrite_daily_overview(self) -> None:
+        for has_legacy_overview in (False, True):
+            with self.subTest(has_legacy_overview=has_legacy_overview):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    config = make_test_config(str(Path(tmpdir) / "runs"))
+                    run_dir = config.output_root_path / "2026-06-10"
+                    video_dir = run_dir / "videos" / "ready"
+                    video_dir.mkdir(parents=True)
+                    (video_dir / "summary.zh-CN.md").write_text("# Summary", encoding="utf-8")
+                    (video_dir / "transcript.original.txt").write_text("Transcript", encoding="utf-8")
+                    overview_path = run_dir / "daily-overview.zh-CN.md"
+                    if has_legacy_overview:
+                        overview_path.write_text("legacy overview", encoding="utf-8")
+
+                    with mock.patch.object(recover_module, "load_config", return_value=config):
+                        recover_module.recover_run("2026-06-10")
+
+                    if has_legacy_overview:
+                        self.assertEqual(overview_path.read_text(encoding="utf-8"), "legacy overview")
+                    else:
+                        self.assertFalse(overview_path.exists())
 
 
 class CliTests(unittest.TestCase):

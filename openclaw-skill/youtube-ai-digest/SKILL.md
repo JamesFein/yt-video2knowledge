@@ -1,6 +1,6 @@
 ---
 name: youtube-ai-digest
-description: Process the local knowledge playlist into Chinese Markdown knowledge notes through the yt-video2knowledge repository on this Mac. Use this skill whenever the user asks OpenClaw to handle the knowledge playlist, process videos added on a date, generate a Chinese daily digest, recover YouTube transcripts, retry failed summaries, inspect an existing run state, or transcribe no-subtitle videos with MLX Whisper. This skill is for the local repository-backed workflow, not casual YouTube chat, unrelated browser automation, or generic video summarization outside this repository. Prefer the repository's real CLI entrypoint and existing manifest state over guessed wrappers or full reruns.
+description: Process the local knowledge playlist into per-video Chinese Markdown knowledge notes through the yt-video2knowledge repository on this Mac. Use this skill whenever the user asks OpenClaw to handle the knowledge playlist, process videos added on a date, generate Chinese video summaries, recover YouTube transcripts, retry failed summaries, inspect an existing run state, or transcribe no-subtitle videos with MLX Whisper. This skill is for the local repository-backed workflow, not casual YouTube chat, unrelated browser automation, or generic video summarization outside this repository. Prefer the repository's real CLI entrypoint and existing manifest state over guessed wrappers or full reruns.
 ---
 
 # YouTube AI Digest For OpenClaw
@@ -38,7 +38,7 @@ Use this skill whenever the user is clearly asking OpenClaw to do one of these t
 
 - Sync or process the `knowledge` playlist.
 - Handle videos added yesterday or on a specific date.
-- Generate a Chinese YouTube digest or daily report.
+- Generate Chinese summaries for videos processed on a date.
 - Recover transcripts from playlist videos.
 - Retry failed summaries.
 - Transcribe a no-subtitle video with MLX Whisper.
@@ -50,7 +50,7 @@ Typical trigger phrases include:
 - `knowledge 播放列表`
 - `昨天新增视频`
 - `YouTube 摘要`
-- `中文日报`
+- `中文摘要`
 - `补跑总结`
 - `无字幕转写`
 - `再跑一下昨天`
@@ -252,4 +252,4 @@ After running, report:
 - transcript source or ASR fallback reason when relevant
 - the next concrete fix if the run is blocked by missing setup
 
-Prefer fields already present in `manifest.json` or `daily-overview.zh-CN.md` instead of reconstructing the story from scratch.
+Prefer fields already present in `manifest.json` and per-video `metadata.json` instead of reconstructing the story from scratch.

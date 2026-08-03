@@ -38,11 +38,11 @@ def _load_experiment_module():
 
 
 class PromptRegistryTests(unittest.TestCase):
-    def test_registry_contains_all_seventeen_nonempty_prompts(self) -> None:
+    def test_registry_contains_all_sixteen_nonempty_prompts(self) -> None:
         prompt_paths = sorted((PROMPT_ROOT / "production").glob("*.md"))
         prompt_paths.extend(sorted(EXPERIMENT_PROMPT_ROOT.rglob("*.md")))
 
-        self.assertEqual(len(prompt_paths), 17)
+        self.assertEqual(len(prompt_paths), 16)
         for path in prompt_paths:
             with self.subTest(path=path):
                 self.assertTrue(path.read_text(encoding="utf-8").strip())
@@ -95,7 +95,6 @@ class PromptRegistryTests(unittest.TestCase):
             ROOT / "experiments" / "summary-prompt-v1" / "run_experiment.py"
         ).read_text(encoding="utf-8")
 
-        self.assertNotIn("你是一个中文知识编辑，请把多条视频摘要整理成每日总览", production_source)
         self.assertNotIn("你是匿名文章评审。你会看到同一篇 transcript", experiment_source)
         self.assertNotIn("比较同一 transcript 在同一提示词下生成的两篇文章", experiment_source)
         self.assertIn('_read_prompt("classifier.md")', experiment_source)

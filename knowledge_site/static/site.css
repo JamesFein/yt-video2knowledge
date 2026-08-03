@@ -369,58 +369,6 @@ a:focus-visible {
   color: var(--muted);
 }
 
-.daily-overview {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.65) inset;
-  margin-bottom: 28px;
-}
-
-.daily-overview summary {
-  align-items: center;
-  color: var(--ink);
-  cursor: pointer;
-  display: flex;
-  font-family: var(--font-serif);
-  font-size: 22px;
-  font-weight: 650;
-  gap: 12px;
-  letter-spacing: -0.02em;
-  list-style: none;
-  padding: 18px 20px;
-}
-
-.daily-overview summary::-webkit-details-marker {
-  display: none;
-}
-
-.daily-overview summary::before {
-  color: var(--accent-dark);
-  content: "+";
-  font-family: var(--font-sans);
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.daily-overview[open] summary::before {
-  content: "-";
-}
-
-.daily-overview[open] summary {
-  border-bottom: 1px solid var(--line);
-}
-
-.summary-text {
-  white-space: pre-wrap;
-  color: #30332f;
-  font-family: var(--font-serif);
-  font-size: 18px;
-  line-height: 1.75;
-  padding: 22px 24px;
-}
-
 .video-heading {
   display: grid;
   grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
@@ -730,10 +678,6 @@ pre {
     font-size: 34px;
   }
 
-  .summary-text {
-    font-size: 16px;
-    padding: 18px;
-  }
 }
 
 @media (hover: none), (max-width: 720px) {

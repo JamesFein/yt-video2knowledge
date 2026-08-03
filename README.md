@@ -31,11 +31,10 @@
 4. 官方字幕拿不到时，再尝试自动字幕
 5. 如果连自动字幕都没有，就下载音频并用 `mlx-whisper` 本地转写
 6. 把 transcript 交给 OpenAI-compatible 接口生成中文总结
-7. 生成日报和单视频总结文档
+7. 按日期生成单视频总结文档
 
 输出结果会落在：
 
-- `data/runs/YYYY-MM-DD/daily-overview.zh-CN.md`
 - `data/runs/YYYY-MM-DD/manifest.json`
 - `data/runs/YYYY-MM-DD/videos/<video-id>/summary.zh-CN.md`
 - `data/runs/YYYY-MM-DD/videos/<video-id>/transcript.original.txt`
@@ -103,7 +102,7 @@
 ### 7. `OpenAI-compatible Responses API`
 
 - 负责把 transcript 整理成中文 Markdown 总结
-- 也负责把多个单视频总结再聚合成日报
+- 每个视频独立生成中文总结，不再额外聚合每日总览
 - 当前这条网关真实可用的协议是 `/v1/responses`，不是旧的 `/v1/chat/completions`
 
 ### 8. `manifest.json` / `metadata.json`
@@ -539,7 +538,7 @@ uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-s
 uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID --force-summary-retry
 ```
 
-如果需要人工接管最后一条 summary，也通过仓库导入，保证 `manifest.json` 和日报同步重建：
+如果需要人工接管最后一条 summary，也通过仓库导入，保证 `manifest.json` 和单视频产物同步更新：
 
 ```bash
 uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
@@ -653,7 +652,7 @@ openclaw skills info youtube-ai-digest
 
 在 OpenClaw GUI 里直接说这类话：
 
-- `处理 knowledge 播放列表昨天新增的视频，给我中文日报`
+- `处理 knowledge 播放列表昨天新增的视频，按日期生成中文摘要`
 - `knowledge 列表里昨天那批视频帮我补一下总结`
 - `把 2026-03-21 新加的视频都整理成知识笔记`
 
@@ -663,13 +662,13 @@ Telegram 里可以更短一点，但最好保留这些关键词中的几个：
 
 - `knowledge`
 - `昨天新增`
-- `中文日报`
+- `中文摘要`
 - `补跑总结`
 - `无字幕转写`
 
 例如：
 
-- `knowledge 昨天新增的视频帮我跑一下，出中文日报`
+- `knowledge 昨天新增的视频帮我跑一下，生成中文摘要`
 - `knowledge 那条没字幕的视频也继续转写`
 
 #### 3. CLI
@@ -677,7 +676,7 @@ Telegram 里可以更短一点，但最好保留这些关键词中的几个：
 CLI 可以显式点名 skill 意图，最直接的模板是：
 
 ```bash
-openclaw agent --local --message "请用 youtube-ai-digest 处理 knowledge 播放列表 2026-03-21 新增的视频，并生成中文日报。"
+openclaw agent --local --message "请用 youtube-ai-digest 处理 knowledge 播放列表 2026-03-21 新增的视频，并生成中文摘要。"
 ```
 
 如果你要补跑总结，可以这样说：
@@ -799,11 +798,7 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
 
 ## 输出文件说明
 
-### 1. `daily-overview.zh-CN.md`
-
-- 当天所有处理成功视频的日报总览
-
-### 2. `manifest.json`
+### 1. `manifest.json`
 
 - 当天批处理的总清单
 - 可看到：
@@ -814,7 +809,7 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
   - `failed_count`
   - `needs_review_count`
 
-### 3. `videos/<video-id>/metadata.json`
+### 2. `videos/<video-id>/metadata.json`
 
 - 每条视频的详细状态
 - 可以看到：

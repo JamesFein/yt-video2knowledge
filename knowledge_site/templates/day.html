@@ -7,15 +7,8 @@
   <a class="return-pill" href="/">← 返回日期列表</a>
   <section class="page-heading">
     <h1>{{ day.day_date }}</h1>
-    <p>当天同步完成的视频与概要。</p>
+    <p>当天同步完成的视频摘要。</p>
   </section>
-
-  {% if day_summary_text %}
-    <details class="daily-overview">
-      <summary>knowledge Daily Overview</summary>
-      <section class="summary-text">{{ day_summary_text }}</section>
-    </details>
-  {% endif %}
 
   <section class="video-list" aria-label="当天视频">
     {% if videos %}

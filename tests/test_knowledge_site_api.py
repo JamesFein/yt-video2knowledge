@@ -35,7 +35,6 @@ def write_ready_video(root: Path) -> Settings:
     day_dir = root / "data" / "runs" / "2026-06-01"
     video_dir = day_dir / "videos" / "ready"
     video_dir.mkdir(parents=True, exist_ok=True)
-    (day_dir / "daily-overview.zh-CN.md").write_text("# Daily", encoding="utf-8")
     (video_dir / "summary.zh-CN.md").write_text(
         "## 一句话总结\n\nReady summary\n\n### 可执行启发\n\nTry it.",
         encoding="utf-8",
@@ -125,9 +124,9 @@ class KnowledgeSiteApiTests(unittest.TestCase):
             self.assertEqual(index_page.text.count('/static/site.js?v=20260619-link-scroll-v2'), 1)
             day_page = client.get("/days/2026-06-01")
             self.assertEqual(day_page.text.count('/static/site.js?v=20260619-link-scroll-v2'), 1)
-            self.assertIn('<details class="daily-overview">', day_page.text)
-            self.assertIn("<summary>knowledge Daily Overview</summary>", day_page.text)
-            self.assertNotIn('<details class="daily-overview" open', day_page.text)
+            self.assertNotIn("daily-overview", day_page.text)
+            self.assertNotIn("Daily Overview", day_page.text)
+            self.assertNotIn("暂无日报内容", index_page.text)
             self.assertIn('<a class="return-pill" href="/">← 返回日期列表</a>', day_page.text)
             self.assertIn('href="/videos/ready?day=2026-06-01"', day_page.text)
             video_page = client.get("/videos/ready")

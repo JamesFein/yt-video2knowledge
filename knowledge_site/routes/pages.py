@@ -15,7 +15,7 @@ from knowledge_site.auth import (
     sanitize_next,
 )
 from knowledge_site.database import connect_db
-from knowledge_site.markdown_blocks import markdown_to_plain_text, split_markdown_blocks
+from knowledge_site.markdown_blocks import split_markdown_blocks
 
 
 router = APIRouter()
@@ -67,7 +67,6 @@ def index(request: Request) -> HTMLResponse:
             """
             SELECT
                 d.day_date,
-                d.daily_summary_markdown,
                 d.synced_at,
                 COUNT(dv.video_id) AS video_count
             FROM days AS d
@@ -79,13 +78,7 @@ def index(request: Request) -> HTMLResponse:
     finally:
         conn.close()
 
-    days = [
-        {
-            **dict(row),
-            "summary_excerpt": _excerpt(row["daily_summary_markdown"]),
-        }
-        for row in rows
-    ]
+    days = [dict(row) for row in rows]
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -102,7 +95,7 @@ def day_detail(day_date: str, request: Request) -> HTMLResponse:
     conn = connect_db(request.app.state.settings.db_path)
     try:
         day = conn.execute(
-            "SELECT * FROM days WHERE day_date = ?",
+            "SELECT day_date, synced_at FROM days WHERE day_date = ?",
             (day_date,),
         ).fetchone()
         if day is None:
@@ -125,7 +118,6 @@ def day_detail(day_date: str, request: Request) -> HTMLResponse:
         name="day.html",
         context={
             "day": dict(day),
-            "day_summary_text": markdown_to_plain_text(day["daily_summary_markdown"]),
             "videos": [dict(video) for video in videos],
         },
     )
@@ -175,13 +167,6 @@ def _require_login(request: Request) -> RedirectResponse | None:
     if is_authenticated(request):
         return None
     return login_redirect(request)
-
-
-def _excerpt(markdown: str, limit: int = 180) -> str:
-    text = markdown_to_plain_text(markdown)
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "..."
 
 
 def _resolve_video_day(conn, video_id: str, day: str | None) -> str | None:

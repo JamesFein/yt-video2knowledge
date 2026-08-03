@@ -129,7 +129,7 @@ curl -I https://www.miniaiheadlines.top/
 1. 打开公网地址。
 2. 输入共享密码登录。
 3. 首页 `/` 会按日期倒序展示已同步的知识日期。
-4. 点击某一天进入 `/days/{date}`，查看当天日报和已完成总结的视频列表。
+4. 点击某一天进入 `/days/{date}`，查看当天已完成总结的视频列表。
 5. 点击视频进入 `/videos/{video_id}`。
 6. 在视频页左侧勾选 summary block。
 7. 点击“写入 Meta Summary”，选中的纯文本会追加到右侧编辑区。
