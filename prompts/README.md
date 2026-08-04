@@ -6,8 +6,8 @@
 
 | 文件 | 用途 | 调用位置 |
 | --- | --- | --- |
-| `production/summary-article-v5.md` | transcript 或证据表生成最终简体中文文章 | `scripts/knowledge_digest.py` |
-| `production/summary-evidence-v1.md` | 超长 transcript 分段提取证据 | `scripts/knowledge_digest.py` |
+| `production/summary-article-v5.md` | transcript 或证据表生成最终简体中文文章 | `src/yt_video2knowledge/digest/summary.py` |
+| `production/summary-evidence-v1.md` | 超长 transcript 分段提取证据 | `src/yt_video2knowledge/digest/summary.py` |
 
 `summary-article-v5.md` 是当前正式生产版本，包含 `中文标题：...` 输出协议和隐藏的 `<!-- SUMMARY_COMPLETE -->` 完成标记。`summary-evidence-v1.md` 包含对应的 `<!-- EVIDENCE_COMPLETE -->` 标记。修改完成标记时必须同时修改生产验证代码和测试。
 

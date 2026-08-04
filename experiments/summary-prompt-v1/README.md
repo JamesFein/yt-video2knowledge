@@ -1,6 +1,6 @@
 # Summary Prompt V1
 
-这个目录保存可版本控制的实验说明和研究结论。提示词统一位于仓库根目录的 `prompts/experiments/summary-prompt-v1/`；原 transcript、历史总结、模型响应及评分位于 Git 忽略的 `data/experiments/summary-prompt-v1/`。
+这个目录保存可版本控制的实验说明和研究结论。提示词统一位于仓库根目录的 `experiments/summary-prompt-v1/prompts/`；原 transcript、历史总结、模型响应及评分位于 Git 忽略的 `data/experiments/summary-prompt-v1/`。
 
 所有模型调用都从仓库根目录的 `新的文字简写模型.txt` 读取唯一的模型配置。不得把其中的密钥复制到本目录、日志或结果文件。
 

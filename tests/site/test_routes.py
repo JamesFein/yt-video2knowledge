@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from knowledge_site.config import Settings
-from knowledge_site.main import create_app
-from knowledge_site.markdown_blocks import split_markdown_blocks
-from knowledge_site.routes.pages import templates
-from knowledge_site.sync import sync_knowledge_site
+from yt_video2knowledge.site.config import Settings
+from yt_video2knowledge.site.app import create_app
+from yt_video2knowledge.site.markdown import split_markdown_blocks
+from yt_video2knowledge.site.routes.pages import templates
+from yt_video2knowledge.site.sync import sync_knowledge_site
 
 
 def make_settings(root: Path) -> Settings:
@@ -58,7 +58,14 @@ def write_ready_video(root: Path) -> Settings:
 
 class KnowledgeSiteApiTests(unittest.TestCase):
     def test_site_script_keeps_native_scroll_restoration(self) -> None:
-        script = (Path(__file__).resolve().parents[1] / "knowledge_site" / "static" / "site.js").read_text(
+        script = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "yt_video2knowledge"
+            / "site"
+            / "static"
+            / "site.js"
+        ).read_text(
             encoding="utf-8"
         )
 
@@ -254,7 +261,7 @@ class MarkdownBlockTests(unittest.TestCase):
 
 class BodySegmentTests(unittest.TestCase):
     def _segments(self, body: str):
-        from knowledge_site.markdown_blocks import parse_body_segments
+        from yt_video2knowledge.site.markdown import parse_body_segments
 
         return parse_body_segments(body)
 

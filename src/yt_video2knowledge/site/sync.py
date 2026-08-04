@@ -11,6 +11,8 @@ from typing import Any
 
 from opencc import OpenCC
 
+from yt_video2knowledge.digest.manifest import index_manifest_videos
+
 from .config import Settings
 from .database import connect_db, initialize_database, utc_now
 
@@ -107,7 +109,7 @@ def format_sync_failure(
     mode: str,
 ) -> str:
     target = target_date or "<full>"
-    retry = "python scripts/sync_knowledge_site.py"
+    retry = "uv run yt-video2knowledge sync-site"
     if target_date:
         retry += f" --target-date {target_date}"
     return (
@@ -136,7 +138,7 @@ def _sync_day(
     synced_at = utc_now()
     day_date = day_dir.name
     manifest = _load_json(day_dir / "manifest.json")
-    manifest_records, manifest_failures = _manifest_indexes(manifest)
+    manifest_records, manifest_failures = index_manifest_videos(manifest)
     pending_ids = {
         video_id
         for video_id, record in manifest_records.items()
@@ -220,34 +222,6 @@ def _sync_day(
         directory_failed_count=directory_failed,
         unclassified_video_count=unclassified,
     )
-
-
-def _manifest_indexes(manifest: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    records: dict[str, dict[str, Any]] = {}
-    failures: dict[str, dict[str, Any]] = {}
-
-    videos = manifest.get("videos")
-    if isinstance(videos, dict):
-        for video_id, record in videos.items():
-            if isinstance(record, dict):
-                records[str(video_id)] = {**record, "id": str(video_id)}
-    elif isinstance(videos, list):
-        _merge_records(records, videos)
-
-    _merge_records(records, manifest.get("processed_videos", []))
-    for item in manifest.get("failed_videos", []):
-        if isinstance(item, dict) and item.get("id"):
-            failures[str(item["id"])] = {**item, "processing_status": FAILED_STATUS}
-
-    return records, failures
-
-
-def _merge_records(target: dict[str, dict[str, Any]], items: Any) -> None:
-    if not isinstance(items, list):
-        return
-    for item in items:
-        if isinstance(item, dict) and item.get("id"):
-            target[str(item["id"])] = dict(item)
 
 
 def _upsert_video(

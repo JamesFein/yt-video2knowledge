@@ -7,15 +7,15 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
 
-from knowledge_site.auth import (
+from yt_video2knowledge.site.auth import (
     SESSION_AUTH_KEY,
     is_authenticated,
     login_redirect,
     read_urlencoded_form,
     sanitize_next,
 )
-from knowledge_site.database import connect_db
-from knowledge_site.markdown_blocks import split_markdown_blocks
+from yt_video2knowledge.site.database import connect_db
+from yt_video2knowledge.site.markdown import split_markdown_blocks
 
 
 router = APIRouter()

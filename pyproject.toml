@@ -1,5 +1,5 @@
 [project]
-name = "youtube-knowledge-digest"
+name = "yt-video2knowledge"
 version = "0.1.0"
 description = "Local-first YouTube playlist digest workflow for macOS."
 readme = "README.md"
@@ -18,5 +18,12 @@ dependencies = [
   "opencc-python-reimplemented>=0.1.7",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+yt-video2knowledge = "yt_video2knowledge.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yt_video2knowledge"]

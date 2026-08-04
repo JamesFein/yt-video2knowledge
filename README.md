@@ -17,9 +17,24 @@
 另外，这个仓库现在还提供了一套 **OpenClaw 专用安装副本**：
 
 - 仓库内协作用根目录 `SKILL.md`
-- 给本机 OpenClaw 全局注册时，用 `openclaw-skill/youtube-ai-digest/`
+- 给本机 OpenClaw 全局注册时，用 `integrations/openclaw/youtube-ai-digest/`
 
 这样做的原因是：OpenClaw 的技能目录有自己的路径边界规则，不能稳定地直接把当前仓库外链进去。
+
+## 仓库地图
+
+```text
+src/yt_video2knowledge/  正式 implementation：CLI、Digest 流程和 Knowledge Site
+tests/                   按 digest、site、experiments 镜像验证正式 module
+prompts/production/      生产提示词
+experiments/             与生产隔离的实验代码、提示词和结论
+integrations/            OpenClaw 等外部系统的薄 adapter
+tools/                   安装和维护工具
+docs/                    指南、运行手册、方案、ADR 与归档
+data/                    本机运行状态和产物，不作为源代码
+```
+
+正式代码的依赖方向固定为：`cli → digest.run / site.sync`，`digest.run → digest 下层 domain module`，`site.sync → digest.manifest`。下层 module 不反向依赖编排层或 CLI；`experiments/` 也不会被 `src/` 导入。
 
 ## 这个项目现在到底能做什么
 
@@ -371,7 +386,7 @@ Google 下载下来的文件名通常像这样：
 2. 运行下面命令：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --youtube-auth
+uv run yt-video2knowledge digest --youtube-auth
 ```
 
 3. 授权成功后生成：
@@ -402,7 +417,7 @@ brew bundle
 uv sync
 ```
 
-这一步会按锁文件创建并维护项目自己的 `.venv`，保证新机器和当前已验证环境尽量一致。
+这一步会按锁文件创建并维护项目自己的 `.venv`，并以 editable 方式安装 `src/yt_video2knowledge/`，因此 CLI、测试和工具都直接导入同一份正式 package，不再修改 `sys.path`。
 
 ### 浏览器前提
 
@@ -486,7 +501,7 @@ cp .env.local.example .env.local
 ### 第 6 步：执行一次 YouTube OAuth 授权
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --youtube-auth
+uv run yt-video2knowledge digest --youtube-auth
 ```
 
 授权成功后应生成：
@@ -498,7 +513,7 @@ uv run python scripts/run_knowledge_digest.py --youtube-auth
 先完全退出 Google Chrome，然后执行：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
+uv run yt-video2knowledge digest --seed-from-current-profile
 ```
 
 ### 第 8 步：跑目标日期
@@ -506,7 +521,7 @@ uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
 例如：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21
+uv run yt-video2knowledge digest --target-date 2026-03-21
 ```
 
 如果当天已经跑过一次，再次执行同一个 `target-date` 时会默认走增量模式：
@@ -517,31 +532,31 @@ uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21
 如果你明确想整天全部重跑：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --full-reprocess
+uv run yt-video2knowledge digest --target-date 2026-03-21 --full-reprocess
 ```
 
 ### 第 9 步：如果总结失败，用补跑模式恢复
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-summaries
+uv run yt-video2knowledge digest --target-date 2026-03-21 --retry-summaries
 ```
 
 如果只想补一条：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID
+uv run yt-video2knowledge digest --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID
 ```
 
 如果某条 summary 已经因为临时网络错误达到重试上限，但你确认要再定向尝试一次：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID --force-summary-retry
+uv run yt-video2knowledge digest --target-date 2026-03-21 --retry-summaries --video-id VIDEO_ID --force-summary-retry
 ```
 
 如果需要人工接管最后一条 summary，也通过仓库导入，保证 `manifest.json` 和单视频产物同步更新：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
+uv run yt-video2knowledge digest --target-date 2026-03-21 --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
 ```
 
 ## 当前推荐命令清单
@@ -549,19 +564,19 @@ uv run python scripts/run_knowledge_digest.py --target-date 2026-03-21 --video-i
 ### 1. 一次性 OAuth 授权
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --youtube-auth
+uv run yt-video2knowledge digest --youtube-auth
 ```
 
 ### 2. 克隆当前 Chrome profile
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
+uv run yt-video2knowledge digest --seed-from-current-profile
 ```
 
 ### 3. 处理某一天加入播放列表的视频
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD
 ```
 
 默认同日重复执行会增量处理，只补新视频和非成功视频。
@@ -569,31 +584,55 @@ uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD
 ### 4. 强制整天全量重跑
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --full-reprocess
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD --full-reprocess
 ```
 
 ### 5. 显式允许旧的 `first_seen` 回退逻辑
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --allow-fallback-first-seen
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD --allow-fallback-first-seen
 ```
 
 ### 6. 补跑待总结视频
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD --retry-summaries
 ```
 
-### 7. 定向恢复卡住的单条总结
+### 7. 用现有 Transcript 重新生成全部摘要
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --retry-summaries --video-id VIDEO_ID --force-summary-retry
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD --regenerate-summaries
 ```
 
-### 8. 导入人工摘要并重建运行状态
+### 8. 定向恢复卡住的单条总结
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD --retry-summaries --video-id VIDEO_ID --force-summary-retry
+```
+
+### 9. 导入人工摘要并重建运行状态
+
+```bash
+uv run yt-video2knowledge digest --target-date YYYY-MM-DD --video-id VIDEO_ID --adopt-summary-file /absolute/path/to/summary.zh-CN.md
+```
+
+### 10. 从现有产物恢复 Manifest
+
+```bash
+uv run yt-video2knowledge recover-manifest --target-date YYYY-MM-DD
+```
+
+### 11. 手动同步 Knowledge Site
+
+```bash
+uv run yt-video2knowledge sync-site --target-date YYYY-MM-DD
+```
+
+### 12. 启动 Knowledge Site
+
+```bash
+uv run uvicorn yt_video2knowledge.site.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
 ## 给 OpenClaw 安装并调用这个 Skill
@@ -617,12 +656,12 @@ uv run python scripts/run_knowledge_digest.py --target-date YYYY-MM-DD --video-i
 在仓库根目录执行：
 
 ```bash
-bash scripts/install_openclaw_skill.sh
+bash tools/install_openclaw_skill.sh
 ```
 
 这个脚本会把仓库里的模板目录：
 
-- `openclaw-skill/youtube-ai-digest/`
+- `integrations/openclaw/youtube-ai-digest/`
 
 复制到：
 
@@ -695,7 +734,7 @@ OpenClaw 版 skill 自己不重写业务逻辑，它只是一个很薄的包装�
 
 实际运行入口仍然是：
 
-- `uv run python scripts/run_knowledge_digest.py ...`
+- `uv run yt-video2knowledge digest ...`
 
 这样做的好处是：
 
@@ -771,7 +810,7 @@ OPENAI_ALLOW_INSECURE_SSL=true
 2. 重新执行：
 
 ```bash
-uv run python scripts/run_knowledge_digest.py --seed-from-current-profile
+uv run yt-video2knowledge digest --seed-from-current-profile
 ```
 
 如果仍失败，检查：

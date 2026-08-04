@@ -377,13 +377,13 @@
             <p class="kicker">代码事实</p>
             <h3>生产提示词强制栏目覆盖</h3>
             <p>系统消息明确要求覆盖核心结论、关键论点、可执行启发，并限制只使用这些章节。长文本合并路径同样强制“一句话总结、关键观点、可执行启发”。</p>
-            <a class="evidence-link" href="../../scripts/knowledge_digest.py">生产实现：scripts/knowledge_digest.py，约 1710–1775 行 ↗</a>
+            <a class="evidence-link" href="../../src/yt_video2knowledge/digest/summary.py">生产实现：digest/summary.py ↗</a>
           </article>
           <article class="card evidence-card" data-evidence="inference">
             <p class="kicker">合理推断</p>
             <h3>提示目标与真正阅读目标错位</h3>
             <p>固定栏目鼓励模型覆盖更多内容，并在原文没有建议时也填充“可执行启发”。它更像知识整理提纲，不像围绕一个核心认识写成的短文。</p>
-            <a class="evidence-link" href="../../prompts/experiments/summary-prompt-v1/current-production.md">基线提示词快照 ↗</a>
+            <a class="evidence-link" href="prompts/current-production.md">基线提示词快照 ↗</a>
           </article>
         </div>
       </section>
@@ -652,7 +652,7 @@
         <h3 class="subhead">关键证据入口</h3>
         <div class="file-list">
           <a class="file-link" href="final-recommendation.md"><strong>研究结论</strong><code>final-recommendation.md</code></a>
-          <a class="file-link" href="../../prompts/experiments/summary-prompt-v1/final-candidate.md"><strong>v3 最终候选提示词</strong><code>prompts/experiments/summary-prompt-v1/final-candidate.md</code></a>
+          <a class="file-link" href="prompts/final-candidate.md"><strong>v3 最终候选提示词</strong><code>experiments/summary-prompt-v1/prompts/final-candidate.md</code></a>
           <a class="file-link" href="classification-report.md"><strong>60 篇分类报告</strong><code>classification-report.md</code></a>
           <a class="file-link" href="results-v3.md"><strong>v3 汇总结果</strong><code>results-v3.md</code></a>
           <a class="file-link" href="run_experiment.py"><strong>实验实现</strong><code>run_experiment.py</code></a>

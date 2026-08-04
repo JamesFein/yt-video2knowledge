@@ -1833,9 +1833,9 @@ wheels = [
 ]
 
 [[package]]
-name = "youtube-knowledge-digest"
+name = "yt-video2knowledge"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "google-api-python-client" },

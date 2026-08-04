@@ -1,40 +1,49 @@
-# ADR-NNNN: [Decision Title]
+# ADR-NNNN：[决策标题]
 
-**Date**: YYYY-MM-DD
-**Status**: proposed | accepted | deprecated | superseded by ADR-NNNN
-**Deciders**: [who was involved]
+- **日期**：YYYY-MM-DD
+- **状态**：proposed | accepted | deprecated | superseded by ADR-NNNN
+- **决策者**：[参与决策的人]
 
-## Context
+## 当前适用范围
 
-What issue, constraint, or force is motivating this decision?
+说明该决策现在约束哪些 module、外部系统或运行场景，以及哪些部分不在范围内。
 
-## Decision
+## 背景
 
-What decision are we making?
+什么问题、约束或力量促使我们必须做出这个决策？
 
-## Alternatives Considered
+## 决策
 
-### Alternative 1: [Name]
-- **Pros**: [benefits]
-- **Cons**: [drawbacks]
-- **Why not**: [specific reason this was rejected]
+我们决定做什么？用可以验证的语言写出不变量或边界。
 
-### Alternative 2: [Name]
-- **Pros**: [benefits]
-- **Cons**: [drawbacks]
-- **Why not**: [specific reason this was rejected]
+## 考虑过的替代方案
 
-## Consequences
+### 方案一：[名称]
 
-### Positive
-- [benefit]
+- **优点**：[收益]
+- **缺点**：[代价]
+- **不采用原因**：[拒绝该方案的具体理由]
 
-### Negative
+### 方案二：[名称]
+
+- **优点**：[收益]
+- **缺点**：[代价]
+- **不采用原因**：[拒绝该方案的具体理由]
+
+## 影响
+
+### 正面
+
+- [收益]
+
+### 负面
+
 - [trade-off]
 
-### Risks
-- [risk and mitigation]
+### 风险
 
-## Related
+- [风险与缓解方式]
 
-- [PRD](../../prd.md)
+## 相关资料
+
+- [相关 Issue、PRD、代码、运行手册或 ADR]

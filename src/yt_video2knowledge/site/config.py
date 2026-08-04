@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from yt_video2knowledge.paths import PROJECT_ROOT
 
 
 @dataclass(frozen=True)

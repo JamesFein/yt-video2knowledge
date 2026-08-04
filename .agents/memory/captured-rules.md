@@ -32,7 +32,7 @@ None.
 
 **Status**: PROCESSED
 
-**Promoted to:** `docs/agent-instructions/knowledge-site-deployment.md`
+**Promoted to:** `docs/agents/knowledge-site-deployment.md`
 
 ### [2026-06-19 19:15] - Workflow: Service Verification Must Match App Behavior
 
@@ -49,7 +49,7 @@ None.
 
 **Status**: PROCESSED
 
-**Promoted to:** `docs/agent-instructions/knowledge-site-deployment.md`
+**Promoted to:** `docs/agents/knowledge-site-deployment.md`
 
 ### [2026-06-19 19:15] - Workflow: Background Process Persistence Check
 
@@ -66,7 +66,7 @@ None.
 
 **Status**: PROCESSED
 
-**Promoted to:** `docs/agent-instructions/knowledge-site-deployment.md`
+**Promoted to:** `docs/agents/knowledge-site-deployment.md`
 
 ### [2026-06-19 19:15] - Tools: Exact Process Matching
 
@@ -83,4 +83,4 @@ None.
 
 **Status**: PROCESSED
 
-**Promoted to:** `docs/agent-instructions/knowledge-site-deployment.md`
+**Promoted to:** `docs/agents/knowledge-site-deployment.md`

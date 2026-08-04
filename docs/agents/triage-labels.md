@@ -1,15 +1,15 @@
-# Triage Labels
+# Triage label 映射
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+Agent Skill 使用五种 canonical triage 角色。下表把这些角色映射到本仓库约定的 GitHub label 字符串。
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| Skill 中的角色 | 本仓库 label | 含义 |
+| --- | --- | --- |
+| `needs-triage` | `needs-triage` | Maintainer 尚未评估 |
+| `needs-info` | `needs-info` | 等待报告者补充信息 |
+| `ready-for-agent` | `ready-for-agent` | 规格完整，可交给 AFK agent |
+| `ready-for-human` | `ready-for-human` | 需要人类实现或判断 |
+| `wontfix` | `wontfix` | 决定不处理 |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+Skill 提到某种角色，例如“应用 AFK-ready label”时，使用表格右侧的精确字符串，不翻译 label 本身。
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+GitHub CLI 是独立前置工具。如果当前环境无法运行 `gh label list`，不要声称已经验证远端 label；先按 [Issue tracker 说明](issue-tracker.md) 准备并认证 `gh`。如果远端实际名称与本表不同，应更新本表，而不是让每个 agent 自行猜测。

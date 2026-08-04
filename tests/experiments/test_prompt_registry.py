@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PROMPT_ROOT = ROOT / "prompts"
-EXPERIMENT_PROMPT_ROOT = PROMPT_ROOT / "experiments" / "summary-prompt-v1"
+EXPERIMENT_PROMPT_ROOT = ROOT / "experiments" / "summary-prompt-v1" / "prompts"
 
 HISTORICAL_PROMPT_HASHES = {
     "categories/argument-v1.md": "c4cdb09dd290dc2af9116d1c0df3835ce84928a633d8e94cbc4989f855f97a81",
@@ -90,7 +90,6 @@ class PromptRegistryTests(unittest.TestCase):
         )
 
     def test_model_entrypoints_do_not_embed_stable_system_prompts(self) -> None:
-        production_source = (ROOT / "scripts" / "knowledge_digest.py").read_text(encoding="utf-8")
         experiment_source = (
             ROOT / "experiments" / "summary-prompt-v1" / "run_experiment.py"
         ).read_text(encoding="utf-8")

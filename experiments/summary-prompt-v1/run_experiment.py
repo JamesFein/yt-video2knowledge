@@ -29,8 +29,8 @@ from opencc import OpenCC
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRACKED_DIR = ROOT / "experiments" / "summary-prompt-v1"
-PROMPT_DIR = ROOT / "prompts" / "experiments" / "summary-prompt-v1"
+TRACKED_DIR = Path(__file__).resolve().parent
+PROMPT_DIR = TRACKED_DIR / "prompts"
 EXPERIMENT_DIR = ROOT / "data" / "experiments" / "summary-prompt-v1"
 SAMPLE_DIR = EXPERIMENT_DIR / "samples"
 ROBUSTNESS_DIR = EXPERIMENT_DIR / "robustness"
@@ -1665,7 +1665,7 @@ def stage_report_v4() -> None:
         "",
         "本文件只展示 12 篇 v4 新文章，不包含 v3 对照。人物与事实只能来自 transcript；所有引用均不带时间戳。",
         "",
-        "- [v4 提示词](../../../prompts/experiments/summary-prompt-v1/general-v4.md)",
+        "- [v4 提示词](../../../experiments/summary-prompt-v1/prompts/general-v4.md)",
         "- [v4 静态结果](../../../experiments/summary-prompt-v1/results-v4.md)",
         "",
         "| 样本 | 定向能力 | v4 文章 | 原 transcript |",
@@ -2045,7 +2045,7 @@ def stage_report_gpt_v5() -> None:
   <nav class="toolbar">
     <select id="samplePicker"><option value="all">显示全部 12 组</option>{options}</select>
     <button type="button" id="showAll">全部展开</button>
-    <a href="../../../prompts/experiments/summary-prompt-v1/general-v5.md">v5 提示词</a>
+    <a href="../../../experiments/summary-prompt-v1/prompts/general-v5.md">v5 提示词</a>
     <a href="../../../experiments/summary-prompt-v1/results-gpt-v5.md">检查结果</a>
   </nav>
   <main>{''.join(sample_sections)}</main>

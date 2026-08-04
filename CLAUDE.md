@@ -4,9 +4,21 @@ Local-first YouTube playlist digest workflow with a FastAPI Knowledge Site expos
 
 ## Quick Reference
 
-- Test: `uv run python3 -m unittest discover -s tests`
-- Sync Knowledge Site: `uv run python3 scripts/sync_knowledge_site.py`
-- Run Knowledge Site: `.venv/bin/uvicorn knowledge_site.main:create_app --factory --host 127.0.0.1 --port 8000`
+- Test: `uv run python3 -m unittest discover -s tests -t .`
+- Digest: `uv run yt-video2knowledge digest --target-date YYYY-MM-DD`
+- Sync Knowledge Site: `uv run yt-video2knowledge sync-site --target-date YYYY-MM-DD`
+- Run Knowledge Site: `uv run uvicorn yt_video2knowledge.site.app:create_app --factory --host 127.0.0.1 --port 8000`
+
+## Repository Map
+
+- `src/yt_video2knowledge/`: formal implementation; `digest/` produces artifacts and `site/` serves them.
+- `tests/`: mirrors `digest`, `site`, and repository-local experiments.
+- `prompts/production/`: prompts used by production code.
+- `experiments/`: isolated prototypes and prompt research; production code must not import it.
+- `integrations/`: thin external adapters; `tools/`: repository maintenance commands.
+- `docs/`: guides, operations, plans, archive, ADRs, and agent instructions; `data/`: local runtime state.
+
+Dependency direction: `cli → digest.run / site.sync`, `digest.run → digest domain modules`, `site.sync → digest.manifest`. Lower modules do not import orchestration or CLI.
 
 ## AI 代理工作原则
 
@@ -17,7 +29,7 @@ Local-first YouTube playlist digest workflow with a FastAPI Knowledge Site expos
 
 ## Detailed Instructions
 
-- [Knowledge Site Deployment](docs/agent-instructions/knowledge-site-deployment.md)
+- [Knowledge Site Deployment](docs/agents/knowledge-site-deployment.md)
 
 ## Agent skills
 

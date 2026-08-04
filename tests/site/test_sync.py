@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from knowledge_site.config import Settings
-from knowledge_site.database import connect_db
-from knowledge_site.sync import sync_knowledge_site
+from yt_video2knowledge.site.config import Settings
+from yt_video2knowledge.site.database import connect_db
+from yt_video2knowledge.site.sync import sync_knowledge_site
 
 
 def make_settings(root: Path) -> Settings:

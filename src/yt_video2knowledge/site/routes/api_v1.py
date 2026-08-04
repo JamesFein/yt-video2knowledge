@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from knowledge_site.auth import require_api_auth
-from knowledge_site.database import connect_db, utc_now
+from yt_video2knowledge.site.auth import require_api_auth
+from yt_video2knowledge.site.database import connect_db, utc_now
 
 
 router = APIRouter(
@@ -75,4 +75,3 @@ def _fetch_meta_summary(conn, video_id: str):
         """,
         (video_id,),
     ).fetchone()
-
