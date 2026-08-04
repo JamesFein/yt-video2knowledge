@@ -1,6 +1,6 @@
 # 2026-06-24 OpenClaw 视频恢复复盘
 
-> **文档性质**：这是一次历史故障复盘，不是当前 implementation 的逐行说明。恢复原则仍然有效；当前正式代码位于 `src/yt_video2knowledge/digest/`，OpenClaw queue worker 位于仓库外的 `~/.openclaw/workspace/automation/knowledge-digest/`。
+> **文档性质**：这是一次历史故障复盘，不是当前操作手册，也不能作为当前依赖版本的依据。当前恢复行为以仓库 [`SKILL.md`](../../SKILL.md)、真实 CLI、正式代码和相关 ADR 为准；OpenClaw queue worker 位于仓库外的 `~/.openclaw/workspace/automation/knowledge-digest/`。
 
 ## 复盘结论
 

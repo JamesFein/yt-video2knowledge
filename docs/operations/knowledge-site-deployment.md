@@ -1,6 +1,6 @@
 # Knowledge Site 当前部署运行手册
 
-本文是 Knowledge Site 日常启动、停止、重启、查看日志和验证公网访问的唯一运行手册。Cloudflare DNS 与 Published application 的首次配置见 [Cloudflare Tunnel 配置说明](cloudflare-public-hostname.md)。
+本文是 Knowledge Site 日常启动、停止、重启、查看日志和验证公网访问的唯一运行手册。Coding Agent 在改变服务状态前还必须阅读 [部署安全规则](../agents/knowledge-site-deployment.md)；代码和浏览器验收见 [Site 验收规则](../agents/knowledge-site-validation.md)。Cloudflare DNS 与 Published application 的首次配置见 [Cloudflare Tunnel 配置说明](cloudflare-public-hostname.md)。
 
 ## 当前结论
 

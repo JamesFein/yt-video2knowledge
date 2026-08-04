@@ -2,6 +2,8 @@
 
 本仓库的 Issue 和 PRD 使用 GitHub Issues，repository 由当前 clone 的 `git remote -v` 决定。
 
+> **验证状态（2026-08-04）**：本机已安装 `gh 2.97.0`，但尚未登录任何 GitHub host；tracker 配置已确认，远端 Issue 和 labels 尚未核验。完成 `gh auth login` 后才能执行或声称完成远端操作。
+
 ## 前置条件
 
 Issue 操作使用 GitHub CLI `gh`。它不是 Digest 或 Knowledge Site 的运行依赖，也没有由当前 `Brewfile` 安装；只有执行 Issue/PR 工作流时才需要单独准备：

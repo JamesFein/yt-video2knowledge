@@ -171,7 +171,7 @@ yt-video2knowledge/
 | `README.md` | 安装、依赖、实际工作流和常见问题 | 人 |
 | `SKILL.md` | 触发条件、默认路径、OpenClaw 行为和结果汇报 | agent |
 | `CONTEXT.md` | Playlist Entry、Target Date、Digest Run 等统一 domain 词汇 | 人和 agent |
-| `CLAUDE.md` / `AGENTS.md` | coding agent 在仓库内工作的约束 | agent |
+| `CLAUDE.md` / `AGENTS.md` | 同一份 coding agent 根约束；`AGENTS.md` 是指向 `CLAUDE.md` 的符号链接 | agent |
 | `pyproject.toml` | distribution、依赖、Hatchling 和 CLI entry point | Python/uv |
 | `uv.lock` | 锁定 Python 依赖的精确版本 | uv |
 | `Brewfile` | 声明 `uv`、`yt-dlp`、`ffmpeg` 等系统工具 | Homebrew |
@@ -266,67 +266,25 @@ flowchart TD
 | 本机正常、公网失败 | `cloudflared` LaunchAgent | Cloudflare Tunnel / Published application |
 | OpenClaw 任务未开始 | 仓库外 queue/worker status | `ai.openclaw.knowledge-digest` LaunchAgent |
 
-## 正式命令
+## 命令与操作入口
 
-### 环境与测试
+项目地图只描述结构，不复制容易漂移的命令和操作规则：
 
-```bash
-uv sync --locked
-uv run python3 -m unittest discover -s tests -t .
-uv build
-```
-
-### 内容生产与恢复
-
-```bash
-uv run yt-video2knowledge digest --target-date YYYY-MM-DD
-uv run yt-video2knowledge sync-site --target-date YYYY-MM-DD
-uv run yt-video2knowledge recover-manifest --target-date YYYY-MM-DD
-```
-
-`digest` 正常完成内容任务后会自动同步目标日期。只有修复旧产物、自动同步失败或需要全历史重建时，才单独运行 `sync-site`。
-
-### 手动前台运行站点
-
-下面的命令适合开发和诊断，不是当前持久化部署的主入口：
-
-```bash
-uv run uvicorn yt_video2knowledge.site.app:create_app --factory --host 127.0.0.1 --port 8000
-```
-
-### 查看当前持久化部署
-
-```bash
-launchctl print gui/$(id -u)/top.miniaiheadlines.knowledge-site
-launchctl print gui/$(id -u)/top.miniaiheadlines.cloudflared
-lsof -nP -iTCP:8000 -sTCP:LISTEN
-```
-
-验证应用应使用 `GET`，不要把 `HEAD /` 的 `405` 误判为服务不可用：
-
-```bash
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/
-curl -sS -o /dev/null -w '%{http_code}\n' https://miniaiheadlines.top/
-curl -sS -o /dev/null -w '%{http_code}\n' https://www.miniaiheadlines.top/
-```
-
-未登录时返回 `303` 并进入登录流程是正常行为。
-
-## 给人和 coding agent 的安全边界
-
-- 不读取、复制或提交真实密码、API key、OAuth token、Cookie 或 Cloudflare connector token。
-- 检查环境变量时只报告 `present` 或 `missing`。
-- 操作服务前先确认准确的 LaunchAgent label、端口和日志，不使用宽泛的 `pkill -f`。
-- 不用 `launchctl kickstart -k` 强制打断正在处理视频的 OpenClaw worker。
-- `data/` 是运行事实，不是可随意重写的 fixture；修改前先确认目标日期和 manifest。
-- `docs/archive/` 记录过去，不等于当前实施待办。
+| 需要做什么 | 唯一入口 |
+| --- | --- |
+| 查看开发、测试和常用 CLI | 根 `CLAUDE.md` / `AGENTS.md` 与 [`README.md`](../../README.md) |
+| 执行 Digest 或恢复任务 | 仓库 [`SKILL.md`](../../SKILL.md) 与真实 CLI `--help` |
+| 修改或浏览器验收 Knowledge Site | [Site 变更与浏览器验收规则](../agents/knowledge-site-validation.md) |
+| 操作网站服务或 Tunnel | [Agent 部署规则](../agents/knowledge-site-deployment.md) 与 [当前运行手册](../operations/knowledge-site-deployment.md) |
+| 查阅历史事故和旧方案 | [`docs/archive/`](../archive/)；不得作为当前操作依据 |
 
 ## 继续阅读
 
 - [Knowledge Site 当前部署运行手册](../operations/knowledge-site-deployment.md)
 - [Cloudflare Tunnel 与 Published application 配置](../operations/cloudflare-public-hostname.md)
-- [OpenClaw 视频恢复复盘](../operations/openclaw-recovery.md)
+- [Knowledge Site 变更与浏览器验收规则](../agents/knowledge-site-validation.md)
 - [coding agent 的 Knowledge Site 部署规则](../agents/knowledge-site-deployment.md)
+- [OpenClaw 视频恢复复盘（历史）](../archive/openclaw-recovery.md)
 - [Architecture Decision Records](../adr/README.md)
 - [根目录 README](../../README.md)
 - [仓库 Skill](../../SKILL.md)

@@ -2,6 +2,8 @@
 
 Agent Skill 使用五种 canonical triage 角色。下表把这些角色映射到本仓库约定的 GitHub label 字符串。
 
+> **验证状态（2026-08-04）**：本机已安装 `gh 2.97.0`，但尚未登录 GitHub；以下映射是已确认的仓库约定，但尚未与远端 labels 核验。
+
 | Skill 中的角色 | 本仓库 label | 含义 |
 | --- | --- | --- |
 | `needs-triage` | `needs-triage` | Maintainer 尚未评估 |
