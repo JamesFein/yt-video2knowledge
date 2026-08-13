@@ -280,6 +280,7 @@ flowchart TD
 
 ## 继续阅读
 
+- [Knowledge Site 网络故障心智模型](knowledge-site-network-mental-model.md)
 - [Knowledge Site 当前部署运行手册](../operations/knowledge-site-deployment.md)
 - [Cloudflare Tunnel 与 Published application 配置](../operations/cloudflare-public-hostname.md)
 - [Knowledge Site 变更与浏览器验收规则](../agents/knowledge-site-validation.md)

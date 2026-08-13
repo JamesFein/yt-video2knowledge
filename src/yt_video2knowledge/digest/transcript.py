@@ -24,7 +24,12 @@ YT_DLP_MEDIA_FORBIDDEN_MARKERS = (
     "sign in to confirm you’re not a bot",
     "sign in to confirm you're not a bot",
 )
-YT_DLP_AUDIO_FALLBACK_FORMATS = ("251", "140", "250", "249", "92", "93", "94", "bestaudio/best")
+YT_DLP_AUDIO_FALLBACK_FORMATS = (
+    "worst[language_preference>=10][protocol=m3u8_native]",
+    "worst[language_preference=5][protocol=m3u8_native]",
+    "worst[protocol=m3u8_native]",
+)
+DEFAULT_YT_DLP_AUDIO_TIMEOUT_SECONDS = 1800
 
 
 @dataclass
@@ -96,6 +101,19 @@ def _yt_dlp_base(browser: str | None = None, cookies_path: Path | None = None) -
     return cmd
 
 
+def _yt_dlp_audio_timeout_seconds() -> int:
+    raw_value = os.environ.get("YT_DLP_AUDIO_TIMEOUT_SECONDS")
+    if raw_value is None:
+        return DEFAULT_YT_DLP_AUDIO_TIMEOUT_SECONDS
+    try:
+        timeout = int(raw_value)
+    except ValueError as exc:
+        raise DigestError("YT_DLP_AUDIO_TIMEOUT_SECONDS must be an integer") from exc
+    if timeout <= 0:
+        raise DigestError("YT_DLP_AUDIO_TIMEOUT_SECONDS must be greater than zero")
+    return timeout
+
+
 def _is_yt_dlp_media_forbidden_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(marker in message for marker in YT_DLP_MEDIA_FORBIDDEN_MARKERS)
@@ -135,12 +153,12 @@ def _download_audio_format(
         ]
     )
     try:
-        _run_command(cmd, timeout=600)
+        _run_command(cmd, timeout=_yt_dlp_audio_timeout_seconds())
     except ExternalCommandError as exc:
         if "http error 403" not in str(exc).lower():
             raise
         _cleanup_partial_audio_downloads(output_dir)
-        _run_command(cmd, timeout=600)
+        _run_command(cmd, timeout=_yt_dlp_audio_timeout_seconds())
     candidates = [
         path
         for path in output_dir.glob("source_audio.*")

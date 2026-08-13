@@ -863,6 +863,8 @@ uv run yt-video2knowledge digest --seed-from-current-profile
 
 Knowledge Site 的固定公网入口依赖两个后台进程：
 
+如果想先建立直观的网络与故障诊断心智模型，再阅读具体配置，请看 [Knowledge Site 网络故障心智模型](docs/guides/knowledge-site-network-mental-model.md)。
+
 ```text
 Uvicorn / FastAPI -> 监听 127.0.0.1:8000
 cloudflared       -> 连接 Cloudflare 的 knowledge-site-mac Tunnel
@@ -889,7 +891,7 @@ cloudflared       -> 连接 Cloudflare 的 knowledge-site-mac Tunnel
 
 没有绕过规则时，`region1.v2.argotunnel.com` 和 `region2.v2.argotunnel.com` 会被映射到 `198.18.1.x` Fake-IP，并进入 Clash 的全局代理线路。当前代理线路无法稳定访问 Cloudflare 所需的 `7844` 端口，因此 Tunnel 无法建立，公网域名会返回 `530`。
 
-当前绕过配置让这两个域名得到真实 Cloudflare IP，并让对应 IP 网段绕过 TUN、直接通过物理网卡连接 Cloudflare。
+当两部分绕过规则同时生效时，这两个域名会得到真实 Cloudflare IP，对应 IP 网段也会绕过 TUN、直接通过物理网卡连接 Cloudflare。
 
 ```mermaid
 flowchart LR
@@ -976,12 +978,12 @@ tun:
 
 ### 哪些操作会让规则保留或消失
 
-| 场景 | 规则是否保留 | 原因或注意事项 |
+| 场景 | 源配置与运行态 | 原因或注意事项 |
 | --- | --- | --- |
-| 普通订阅自动更新 | 通常保留 | 更新远程订阅文件，不会正常覆盖独立的专属 Merge 文件 |
-| 电脑重启 | 保留 | Merge 文件和 `profiles.yaml` 都持久保存在磁盘上 |
-| Clash Verge 常规应用升级 | 通常保留 | 常规升级替换应用本体，一般保留 `Application Support` 数据 |
-| 重新生成 `clash-verge.yaml` | 保留 | 只要 Merge 绑定仍在，最终配置就会从订阅和专属 Merge 重新生成 |
+| 普通订阅自动更新 | 源配置通常保留 | 更新远程订阅文件通常不会覆盖独立的专属 Merge；运行态仍应核验 |
+| 电脑重启 | 源配置保留；运行态需验证 | Merge 文件和 `profiles.yaml` 持久保存在磁盘上，但这不证明生成配置仍采用路由排除 |
+| Clash Verge 常规应用升级 | 源配置通常保留；运行态需验证 | 常规升级一般保留 `Application Support` 数据，但内置增强的合并行为可能变化 |
+| 重新生成 `clash-verge.yaml` | 运行态需验证 | 本次观察到内置 TUN 增强会覆盖 Merge 中的路由排除；源 Merge 仍在不代表运行配置已生效 |
 | 切换到另一个 Profile | 当前规则不生效 | 其他 Profile 不一定绑定 `m8l041vQrk0n` |
 | 删除并重新导入 `SSW` | 可能丢失绑定 | 新导入的订阅可能获得新的 UID 和新的增强配置关联 |
 | 手动取消专属 Merge 关联 | 不生效 | `profiles.yaml` 不再把当前订阅和该 Merge UID 关联 |
@@ -990,7 +992,7 @@ tun:
 
 因此，更准确的结论是：
 
-> 当前规则可以承受普通订阅更新、常规 Clash 升级和电脑重启，但它不是不可删除的系统规则。删除或重新导入订阅、解除 Merge 绑定、清除 Clash 数据时，都需要重新检查。
+> 专属 Merge 文件通常能承受普通订阅更新，但有效的运行时路由排除尚未证明能承受配置重载。订阅更新、Clash 升级、电脑重启或配置重载后，都应重新核对生成配置、Mihomo 运行时配置、实际路由和 connector 注册日志。
 
 当前 Clash Verge 的 `enable_auto_launch` 是 `false`。电脑重启后，如果 Clash 没有启动，cloudflared 会直接使用正常网络；以后手动启动 Clash 时，它会加载当前订阅及专属 Merge。cloudflared 自身由 LaunchAgent 保持运行，网络路径短暂变化时会自动重新连接。
 

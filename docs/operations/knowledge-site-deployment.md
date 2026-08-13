@@ -40,6 +40,8 @@ http://127.0.0.1:8000
 
 `cloudflared` 主动从 Mac 建立出站 Tunnel。Mac 关机、断网、任一 LaunchAgent 失效或本机 8000 origin 不健康时，公网网站都会受到影响。
 
+当前网络无法稳定建立 QUIC/UDP 7844 连接，但 TCP 7844 可达，因此 production connector 固定使用 `--protocol http2`。除非已经重新验证 QUIC 连通性，否则不要移除此参数。
+
 ## 外部配置与 secret
 
 LaunchAgent 使用两份仓库外文件：
@@ -80,7 +82,7 @@ launchctl print gui/$(id -u)/top.miniaiheadlines.cloudflared
 - 两个 job 都已加载；
 - `state = running`；
 - Knowledge Site 只有一个进程监听 `127.0.0.1:8000`；
-- `cloudflared` 的进程参数是 `tunnel run --token-file ...`。
+- `cloudflared` 的进程参数是 `tunnel run --protocol http2 --token-file ...`。
 
 ### 2. 检查端口和精确进程
 

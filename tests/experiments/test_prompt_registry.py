@@ -38,21 +38,19 @@ def _load_experiment_module():
 
 
 class PromptRegistryTests(unittest.TestCase):
-    def test_registry_contains_all_sixteen_nonempty_prompts(self) -> None:
+    def test_registry_contains_all_fifteen_nonempty_prompts(self) -> None:
         prompt_paths = sorted((PROMPT_ROOT / "production").glob("*.md"))
         prompt_paths.extend(sorted(EXPERIMENT_PROMPT_ROOT.rglob("*.md")))
 
-        self.assertEqual(len(prompt_paths), 16)
+        self.assertEqual(len(prompt_paths), 15)
         for path in prompt_paths:
             with self.subTest(path=path):
                 self.assertTrue(path.read_text(encoding="utf-8").strip())
 
     def test_production_completion_markers_are_in_prompt_files(self) -> None:
         article = (PROMPT_ROOT / "production" / "summary-article-v5.md").read_text(encoding="utf-8")
-        evidence = (PROMPT_ROOT / "production" / "summary-evidence-v1.md").read_text(encoding="utf-8")
 
         self.assertIn("<!-- SUMMARY_COMPLETE -->", article)
-        self.assertIn("<!-- EVIDENCE_COMPLETE -->", evidence)
 
     def test_historical_experiment_prompt_hashes_are_unchanged(self) -> None:
         for relative_path, expected_hash in HISTORICAL_PROMPT_HASHES.items():

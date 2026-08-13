@@ -13,6 +13,7 @@
 | 备用入口 | `https://www.miniaiheadlines.top` |
 | 本机 origin | `http://127.0.0.1:8000` |
 | connector | 本机 `top.miniaiheadlines.cloudflared` LaunchAgent |
+| connector transport | HTTP/2 over TCP 7844（当前网络的 QUIC/UDP 7844 不可用） |
 | 认证 | Knowledge Site 自带密码/session；未启用 Cloudflare Access |
 
 当前 authoritative nameserver 是：
@@ -122,7 +123,7 @@ http://127.0.0.1:8000
 它执行的核心命令是：
 
 ```text
-cloudflared tunnel run --token-file ~/.config/knowledge-site/cloudflared-token
+cloudflared tunnel run --protocol http2 --token-file ~/.config/knowledge-site/cloudflared-token
 ```
 
 `--token-file` 避免把 token 直接放进命令参数。文件内容不能打印；权限应限制为当前用户可读。

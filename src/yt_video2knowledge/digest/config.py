@@ -27,6 +27,8 @@ DEFAULT_AUTOMATION_PROFILE_DIR = DATA_DIR / "chrome-automation-profile"
 DEFAULT_CHROME_SOURCE_PROFILE_DIR = Path.home() / "Library/Application Support/Google/Chrome"
 DEFAULT_YOUTUBE_CLIENT_SECRETS_PATH = DATA_DIR / "youtube-oauth-client.json"
 DEFAULT_YOUTUBE_TOKEN_PATH = DATA_DIR / "youtube-oauth-token.json"
+DEFAULT_SUMMARY_TRANSCRIPT_TOKEN_LIMIT = 100000
+DEFAULT_SUMMARY_ARTICLE_MAX_OUTPUT_TOKENS = 20000
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -49,6 +51,8 @@ class DigestConfig:
     summary_language: str
     mlx_whisper_model: str
     output_root: str
+    summary_transcript_token_limit: int = DEFAULT_SUMMARY_TRANSCRIPT_TOKEN_LIMIT
+    summary_article_max_output_tokens: int = DEFAULT_SUMMARY_ARTICLE_MAX_OUTPUT_TOKENS
 
     @property
     def output_root_path(self) -> Path:
@@ -149,8 +153,13 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH, playlist_url: str | Non
     payload.setdefault("summary_language", "zh-CN")
     payload.setdefault("mlx_whisper_model", "mlx-community/whisper-small-mlx")
     payload.setdefault("output_root", "data/runs")
+    payload.setdefault("summary_transcript_token_limit", DEFAULT_SUMMARY_TRANSCRIPT_TOKEN_LIMIT)
+    payload.setdefault("summary_article_max_output_tokens", DEFAULT_SUMMARY_ARTICLE_MAX_OUTPUT_TOKENS)
     if not payload["playlist_url"]:
         raise ConfigurationError(f"Missing playlist_url in {config_path}")
+    for key in ("summary_transcript_token_limit", "summary_article_max_output_tokens"):
+        if isinstance(payload[key], bool) or not isinstance(payload[key], int) or payload[key] <= 0:
+            raise ConfigurationError(f"{key} must be a positive integer in {config_path}")
     return DigestConfig(**payload)
 
 

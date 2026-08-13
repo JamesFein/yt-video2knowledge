@@ -35,6 +35,7 @@ from yt_video2knowledge.digest.errors import (
     IncompleteModelResponseError,
     InvalidSummaryArticleError,
     PolicyModelResponseError,
+    TranscriptTokenLimitError,
     TransportModelResponseError,
 )
 from yt_video2knowledge.digest.manifest import (
@@ -172,6 +173,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.youtube_client_secrets_path, "data/youtube-oauth-client.json")
         self.assertEqual(config.youtube_token_path, "data/youtube-oauth-token.json")
         self.assertEqual(config.mlx_whisper_model, "mlx-community/whisper-small-mlx")
+        self.assertEqual(config.summary_transcript_token_limit, 100000)
+        self.assertEqual(config.summary_article_max_output_tokens, 20000)
+
+    def test_load_config_rejects_non_positive_summary_token_settings(self) -> None:
+        for key in ("summary_transcript_token_limit", "summary_article_max_output_tokens"):
+            with self.subTest(key=key):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    path = Path(tmpdir) / "knowledge_config.json"
+                    path.write_text(
+                        json_text(
+                            {
+                                "playlist_url": "https://www.youtube.com/playlist?list=bbb",
+                                key: 0,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ConfigurationError, key):
+                        load_config(path)
 
 
 class PlaylistUrlTests(unittest.TestCase):
@@ -480,6 +500,29 @@ class SummaryRetryTests(unittest.TestCase):
         self.assertEqual(retry_state["stopped_reason"], "non_retryable_error")
         self.assertEqual(retry_state["next_step"], "manual_review")
 
+    def test_transcript_token_limit_error_stops_without_retrying(self) -> None:
+        with mock.patch.object(summary_module, "_openai_request") as request:
+            summary, retry_state = summarize_transcript_with_retries(
+                "a" * 300000,
+                "Video",
+                {
+                    "summary_transcript_token_limit": 100000,
+                    "summary_article_max_output_tokens": 20000,
+                },
+                "Knowledge",
+                clock=lambda: self.now,
+                sleep_fn=lambda seconds: None,
+            )
+
+        self.assertIsNone(summary)
+        request.assert_not_called()
+        self.assertEqual(retry_state["attempt_count"], 1)
+        self.assertEqual(retry_state["failure_kind"], "transcript_token_limit")
+        self.assertEqual(retry_state["estimated_transcript_tokens"], 100000)
+        self.assertEqual(retry_state["transcript_token_limit"], 100000)
+        self.assertEqual(retry_state["stopped_reason"], "non_retryable_error")
+        self.assertEqual(retry_state["next_step"], "manual_review")
+
     def test_retry_window_stops_without_calling_summary(self) -> None:
         calls = []
         existing_retry = {
@@ -693,6 +736,28 @@ class DownloadAudioTests(unittest.TestCase):
 
         self.assertEqual(calls[0][0], "/tmp/custom-yt-dlp")
 
+    def test_download_audio_uses_configured_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            timeouts = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                timeouts.append(timeout)
+                (output_dir / "source_audio.webm").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.dict(os.environ, {"YT_DLP_AUDIO_TIMEOUT_SECONDS": "2400"}):
+                with mock.patch.object(transcript_module, "_run_command", side_effect=fake_run_command):
+                    transcript_module.download_audio("video123", output_dir)
+
+        self.assertEqual(timeouts, [2400])
+
+    def test_download_audio_rejects_invalid_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"YT_DLP_AUDIO_TIMEOUT_SECONDS": "never"}):
+                with self.assertRaisesRegex(DigestError, "must be an integer"):
+                    transcript_module.download_audio("video123", Path(tmpdir))
+
     def test_download_audio_retries_transient_403_for_same_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
@@ -714,7 +779,7 @@ class DownloadAudioTests(unittest.TestCase):
         self.assertEqual(result.name, "source_audio.webm")
         self.assertEqual(len(calls), 2)
 
-    def test_download_audio_retries_403_with_explicit_formats_and_cleans_partials(self) -> None:
+    def test_download_audio_retries_403_with_original_hls_and_cleans_partials(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
             formats = []
@@ -724,19 +789,58 @@ class DownloadAudioTests(unittest.TestCase):
                 formats.append(format_selector)
                 if len(formats) > 1:
                     self.assertFalse(list(output_dir.glob("*.part")))
-                if format_selector in {"bestaudio/best", "251", "92", "93"}:
+                if format_selector == "bestaudio/best":
                     (output_dir / "source_audio.webm.part").write_text("partial", encoding="utf-8")
                     raise ExternalCommandError(
                         "ERROR: unable to download video data: HTTP Error 403: Forbidden"
                     )
-                (output_dir / "source_audio.m4a").write_text("audio", encoding="utf-8")
+                (output_dir / "source_audio.mp4").write_text("audio", encoding="utf-8")
                 return subprocess.CompletedProcess(cmd, 0)
 
             with mock.patch.object(transcript_module, "_run_command", side_effect=fake_run_command):
                 result = transcript_module.download_audio("video123", output_dir, browser="chrome")
 
-        self.assertEqual(result.name, "source_audio.m4a")
-        self.assertEqual(formats, ["bestaudio/best", "bestaudio/best", "251", "251", "140"])
+        self.assertEqual(result.name, "source_audio.mp4")
+        self.assertEqual(
+            formats,
+            [
+                "bestaudio/best",
+                "bestaudio/best",
+                "worst[language_preference>=10][protocol=m3u8_native]",
+            ],
+        )
+
+    def test_download_audio_tries_default_then_general_hls_after_original_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            formats = []
+
+            def fake_run_command(cmd, timeout=120, cwd=None):
+                format_selector = cmd[cmd.index("-f") + 1]
+                formats.append(format_selector)
+                if format_selector == "bestaudio/best":
+                    raise ExternalCommandError(
+                        "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+                    )
+                if "language_preference" in format_selector:
+                    raise ExternalCommandError("ERROR: Requested format is not available")
+                (output_dir / "source_audio.mp4").write_text("audio", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with mock.patch.object(transcript_module, "_run_command", side_effect=fake_run_command):
+                result = transcript_module.download_audio("video123", output_dir, browser="chrome")
+
+        self.assertEqual(result.name, "source_audio.mp4")
+        self.assertEqual(
+            formats,
+            [
+                "bestaudio/best",
+                "bestaudio/best",
+                "worst[language_preference>=10][protocol=m3u8_native]",
+                "worst[language_preference=5][protocol=m3u8_native]",
+                "worst[protocol=m3u8_native]",
+            ],
+        )
 
     def test_download_audio_retries_not_a_bot_with_next_credential_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -780,18 +884,18 @@ class DownloadAudioTests(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("Unable to download audio for video123", message)
         self.assertIn("bestaudio/best", message)
-        self.assertIn("251", message)
-        self.assertIn("140", message)
-        self.assertIn("94", message)
-        self.assertIn("250", message)
-        self.assertIn("249", message)
+        self.assertIn("worst[language_preference>=10][protocol=m3u8_native]", message)
+        self.assertIn("worst[language_preference=5][protocol=m3u8_native]", message)
+        self.assertIn("worst[protocol=m3u8_native]", message)
+        self.assertNotIn("- 251:", message)
+        self.assertNotIn("- 140:", message)
 
 
 class SummarizeTranscriptTests(unittest.TestCase):
     def test_single_chunk_prompt_omits_rewatch_and_returns_simplified_chinese(self) -> None:
         calls = []
 
-        def fake_openai_request(messages, settings, max_tokens=1200):
+        def fake_openai_request(messages, settings, max_output_tokens):
             calls.append(messages)
             return summary_module.ModelResponse(
                 "中文標題：總結\n\n## 核心結論\n\n這個臺灣資料很重要。\n\n<!-- SUMMARY_COMPLETE -->",
@@ -818,43 +922,56 @@ class SummarizeTranscriptTests(unittest.TestCase):
         self.assertNotIn("回看片段", prompt_text)
         self.assertNotIn("值得回看的时间点", prompt_text)
 
-    def test_multi_chunk_summaries_and_final_output_are_simplified_chinese(self) -> None:
-        calls = []
-        responses = [
-            "第一段總結：這個臺灣資料。\n<!-- EVIDENCE_COMPLETE -->",
-            "第二段總結：關鍵啟發。\n<!-- EVIDENCE_COMPLETE -->",
-            "中文標題：最終\n\n## 核心結論\n\n這個臺灣資料有關鍵啟發。\n<!-- SUMMARY_COMPLETE -->",
-        ]
+    def test_estimates_transcript_tokens_from_utf8_bytes(self) -> None:
+        self.assertEqual(summary_module._estimate_transcript_tokens("abc"), 1)
+        self.assertEqual(summary_module._estimate_transcript_tokens("中"), 1)
+        self.assertEqual(summary_module._estimate_transcript_tokens("😀"), 2)
 
-        def fake_openai_request(messages, settings, max_tokens=1200):
-            calls.append(messages)
+    def test_long_transcript_below_token_limit_uses_one_request(self) -> None:
+        transcript = "a" * 299997
+        calls = []
+
+        def fake_openai_request(messages, settings, max_output_tokens):
+            calls.append((messages, max_output_tokens))
             return summary_module.ModelResponse(
-                responses[len(calls) - 1],
+                "中文标题：总结\n\n## 核心结论\n\n完整文章。\n<!-- SUMMARY_COMPLETE -->",
                 provider="anthropic",
                 provider_status="completed",
                 stop_reason="end_turn",
             )
 
-        with mock.patch.object(summary_module, "_chunk_text", return_value=["chunk one", "chunk two"]):
-            with mock.patch.object(summary_module, "_openai_request", side_effect=fake_openai_request):
-                summary = summary_module.summarize_transcript("transcript", "Video", {}, "Knowledge")
+        with mock.patch.object(summary_module, "_openai_request", side_effect=fake_openai_request):
+            summary = summary_module.summarize_transcript(
+                transcript,
+                "Video",
+                {
+                    "summary_transcript_token_limit": 100000,
+                    "summary_article_max_output_tokens": 20000,
+                },
+                "Knowledge",
+            )
 
-        self.assertEqual(summary.text, "中文标题：最终\n\n## 核心结论\n\n这个台湾资料有关键启发。")
-        expected_article_prompt = (
-            summary_module.PROMPT_DIR / summary_module.SUMMARY_ARTICLE_PROMPT_PATH
-        ).read_text(encoding="utf-8").strip()
-        expected_evidence_prompt = (
-            summary_module.PROMPT_DIR / summary_module.SUMMARY_EVIDENCE_PROMPT_PATH
-        ).read_text(encoding="utf-8").strip()
-        self.assertEqual(calls[0][0]["content"], expected_evidence_prompt)
-        self.assertEqual(calls[1][0]["content"], expected_evidence_prompt)
-        self.assertEqual(calls[2][0]["content"], expected_article_prompt)
-        final_prompt = calls[2][1]["content"]
-        all_prompts = "\n".join(message["content"] for messages in calls for message in messages)
-        self.assertIn("第一段总结：这个台湾资料。", final_prompt)
-        self.assertIn("第二段总结：关键启发。", final_prompt)
-        self.assertIn("简体中文", all_prompts)
-        self.assertNotIn("回看", all_prompts)
+        self.assertEqual(summary_module._estimate_transcript_tokens(transcript), 99999)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], 20000)
+        self.assertIn(transcript, calls[0][0][1]["content"])
+
+    def test_transcript_at_token_limit_is_rejected_before_model_request(self) -> None:
+        with mock.patch.object(summary_module, "_openai_request") as request:
+            with self.assertRaises(TranscriptTokenLimitError) as raised:
+                summary_module.summarize_transcript(
+                    "a" * 300000,
+                    "Video",
+                    {
+                        "summary_transcript_token_limit": 100000,
+                        "summary_article_max_output_tokens": 20000,
+                    },
+                    "Knowledge",
+                )
+
+        request.assert_not_called()
+        self.assertEqual(raised.exception.estimated_transcript_tokens, 100000)
+        self.assertEqual(raised.exception.transcript_token_limit, 100000)
 
     def test_rejects_empty_level_two_heading(self) -> None:
         malformed = summary_module.ModelResponse(
@@ -932,7 +1049,7 @@ class ModelApiRoutingTests(unittest.TestCase):
                     {"role": "user", "content": "transcript"},
                 ],
                 settings,
-                max_tokens=4096,
+                max_output_tokens=20000,
             )
 
         self.assertEqual(text.text, "完成")
@@ -941,7 +1058,8 @@ class ModelApiRoutingTests(unittest.TestCase):
         self.assertEqual(text.stop_reason, "end_turn")
         self.assertEqual(post.call_args.args[0], "https://www.dmxapi.cn/v1/messages")
         self.assertEqual(post.call_args.args[1]["system"], "system prompt")
-        self.assertEqual(post.call_args.args[1]["max_tokens"], 4096)
+        self.assertEqual(post.call_args.args[1]["max_tokens"], 20000)
+        self.assertNotIn("temperature", post.call_args.args[1])
         self.assertEqual(post.call_args.kwargs["headers"]["x-api-key"], "secret")
 
     def test_non_claude_model_uses_responses_endpoint(self) -> None:
@@ -955,12 +1073,14 @@ class ModelApiRoutingTests(unittest.TestCase):
             text = summary_module._openai_request(
                 [{"role": "user", "content": "transcript"}],
                 settings,
+                max_output_tokens=20000,
             )
 
         self.assertEqual(text.text, "完成")
         self.assertEqual(text.response_id, "resp_123")
         self.assertEqual(text.provider_status, "completed")
         self.assertEqual(post.call_args.args[0], "https://www.dmxapi.cn/v1/responses")
+        self.assertEqual(post.call_args.args[1]["max_output_tokens"], 20000)
 
     def test_anthropic_max_tokens_rejects_returned_text(self) -> None:
         settings = {"api_key": "secret", "base_url": "https://www.dmxapi.cn", "model": "claude-sonnet-5-cc"}
@@ -972,7 +1092,9 @@ class ModelApiRoutingTests(unittest.TestCase):
         }
         with mock.patch.object(summary_module, "_post_json", return_value=response):
             with self.assertRaises(IncompleteModelResponseError) as raised:
-                summary_module._openai_request([{"role": "user", "content": "x"}], settings)
+                summary_module._openai_request(
+                    [{"role": "user", "content": "x"}], settings, max_output_tokens=20000
+                )
         self.assertEqual(raised.exception.response_id, "msg_cut")
         self.assertEqual(raised.exception.stop_reason, "max_tokens")
         self.assertEqual(raised.exception.output_chars, len("partial article"))
@@ -987,7 +1109,9 @@ class ModelApiRoutingTests(unittest.TestCase):
         }
         with mock.patch.object(summary_module, "_post_json", return_value=response):
             with self.assertRaises(IncompleteModelResponseError) as raised:
-                summary_module._openai_request([{"role": "user", "content": "x"}], settings)
+                summary_module._openai_request(
+                    [{"role": "user", "content": "x"}], settings, max_output_tokens=20000
+                )
         self.assertEqual(raised.exception.provider_status, "incomplete")
         self.assertEqual(raised.exception.stop_reason, "max_output_tokens")
 
@@ -998,7 +1122,9 @@ class ModelApiRoutingTests(unittest.TestCase):
             "_post_json",
             return_value={"id": "resp_proxy", "output_text": "完成"},
         ):
-            response = summary_module._openai_request([{"role": "user", "content": "x"}], settings)
+            response = summary_module._openai_request(
+                [{"role": "user", "content": "x"}], settings, max_output_tokens=20000
+            )
         self.assertEqual(response.text, "完成")
         self.assertEqual(response.provider_status, "missing")
 
@@ -1011,7 +1137,9 @@ class ModelApiRoutingTests(unittest.TestCase):
         }
         with mock.patch.object(summary_module, "_post_json", return_value=response):
             with self.assertRaises(PolicyModelResponseError):
-                summary_module._openai_request([{"role": "user", "content": "x"}], settings)
+                summary_module._openai_request(
+                    [{"role": "user", "content": "x"}], settings, max_output_tokens=20000
+                )
 
     def test_invalid_json_response_is_classified_as_transport_failure(self) -> None:
         response = mock.MagicMock()

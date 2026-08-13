@@ -20,6 +20,8 @@ from opencc import OpenCC
 
 from yt_video2knowledge.digest.config import (
     BEIJING_TZ,
+    DEFAULT_SUMMARY_ARTICLE_MAX_OUTPUT_TOKENS,
+    DEFAULT_SUMMARY_TRANSCRIPT_TOKEN_LIMIT,
     DigestConfig,
     beijing_now,
     load_env_file,
@@ -31,6 +33,7 @@ from yt_video2knowledge.digest.errors import (
     ModelResponseError,
     PolicyModelResponseError,
     ProviderModelResponseError,
+    TranscriptTokenLimitError,
     TransportModelResponseError,
 )
 from yt_video2knowledge.paths import PROMPT_DIR
@@ -40,12 +43,8 @@ SUMMARY_MAX_ATTEMPTS = 3
 SUMMARY_RETRY_WINDOW = timedelta(hours=24)
 SUMMARY_RETRY_BACKOFF_SECONDS = (30, 120, 300)
 SUMMARY_INCOMPLETE_RETRY_BACKOFF_SECONDS = (2, 5)
-SUMMARY_ARTICLE_MAX_TOKENS = 4096
-SUMMARY_CHUNK_MAX_CHARS = 120000
 SUMMARY_COMPLETE_MARKER = "<!-- SUMMARY_COMPLETE -->"
-EVIDENCE_COMPLETE_MARKER = "<!-- EVIDENCE_COMPLETE -->"
 SUMMARY_ARTICLE_PROMPT_PATH = Path("production/summary-article-v5.md")
-SUMMARY_EVIDENCE_PROMPT_PATH = Path("production/summary-evidence-v1.md")
 _SIMPLIFIED_CHINESE_CONVERTER = OpenCC("t2s")
 NON_RETRYABLE_SUMMARY_ERROR_MARKERS = (
     "missing runtime configuration",
@@ -101,7 +100,7 @@ def _load_prompt(relative_path: Path) -> str:
     return prompt
 
 
-def resolve_openai_settings(config: DigestConfig) -> dict[str, str]:
+def resolve_openai_settings(config: DigestConfig) -> dict[str, Any]:
     load_env_file()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     base_url = os.getenv("OPENAI_BASE_URL", "").strip() or config.openai_base_url.strip()
@@ -115,7 +114,13 @@ def resolve_openai_settings(config: DigestConfig) -> dict[str, str]:
         missing.append("OPENAI_MODEL")
     if missing:
         raise ConfigurationError(f"Missing runtime configuration: {', '.join(missing)}")
-    return {"api_key": api_key, "base_url": base_url.rstrip("/"), "model": model}
+    return {
+        "api_key": api_key,
+        "base_url": base_url.rstrip("/"),
+        "model": model,
+        "summary_transcript_token_limit": config.summary_transcript_token_limit,
+        "summary_article_max_output_tokens": config.summary_article_max_output_tokens,
+    }
 
 
 def _openai_ssl_context() -> ssl.SSLContext:
@@ -130,14 +135,14 @@ def _openai_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
-def _openai_headers(settings: dict[str, str]) -> dict[str, str]:
+def _openai_headers(settings: dict[str, Any]) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {settings['api_key']}",
         "Content-Type": "application/json",
     }
 
 
-def _anthropic_headers(settings: dict[str, str]) -> dict[str, str]:
+def _anthropic_headers(settings: dict[str, Any]) -> dict[str, str]:
     return {
         "Accept": "application/json",
         "x-api-key": settings["api_key"],
@@ -213,7 +218,7 @@ def _extract_anthropic_output_text(data: dict[str, Any]) -> str:
 def _post_json(
     url: str,
     payload: dict[str, Any],
-    settings: dict[str, str],
+    settings: dict[str, Any],
     *,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -254,8 +259,9 @@ def _post_json(
 
 def _openai_request(
     messages: list[dict[str, str]],
-    settings: dict[str, str],
-    max_tokens: int = 1200,
+    settings: dict[str, Any],
+    *,
+    max_output_tokens: int,
 ) -> ModelResponse:
     if _uses_anthropic_messages(settings["model"]):
         system_parts = [
@@ -275,8 +281,7 @@ def _openai_request(
             "model": settings["model"],
             "system": "\n\n".join(part for part in system_parts if part),
             "messages": anthropic_messages,
-            "temperature": 0.2,
-            "max_tokens": max_tokens,
+            "max_tokens": max_output_tokens,
             "stream": False,
         }
         data = _post_json(
@@ -328,7 +333,7 @@ def _openai_request(
         "model": settings["model"],
         "input": _response_input_from_messages(messages),
         "temperature": 0.2,
-        "max_output_tokens": max_tokens,
+        "max_output_tokens": max_output_tokens,
     }
     data = _post_json(_api_endpoint(settings["base_url"], "responses"), responses_payload, settings)
     text = _extract_response_output_text(data)
@@ -377,21 +382,8 @@ def _openai_request(
     )
 
 
-def _chunk_text(text: str, max_chars: int = SUMMARY_CHUNK_MAX_CHARS) -> list[str]:
-    lines = text.splitlines()
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for line in lines:
-        if current_len + len(line) + 1 > max_chars and current:
-            chunks.append("\n".join(current))
-            current = []
-            current_len = 0
-        current.append(line)
-        current_len += len(line) + 1
-    if current:
-        chunks.append("\n".join(current))
-    return chunks or [text]
+def _estimate_transcript_tokens(text: str) -> int:
+    return (len(text.encode("utf-8")) + 2) // 3
 
 
 def _to_simplified_chinese(text: str) -> str:
@@ -500,53 +492,17 @@ def _validate_summary_article(summary_text: str, response: ModelResponse | None 
 def summarize_transcript(
     transcript_text: str,
     video_title: str,
-    settings: dict[str, str],
+    settings: dict[str, Any],
     playlist_name: str,
 ) -> GeneratedSummary:
-    article_prompt = _load_prompt(SUMMARY_ARTICLE_PROMPT_PATH)
-    chunks = _chunk_text(transcript_text)
-    if len(chunks) == 1:
-        response = _openai_request(
-            [
-                {
-                    "role": "system",
-                    "content": article_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"播放列表：{playlist_name}\n视频标题：{video_title}\n\n"
-                        "请根据下面的 transcript 输出文章：\n\n"
-                        f"{transcript_text}"
-                    ),
-                },
-            ],
-            settings,
-            max_tokens=SUMMARY_ARTICLE_MAX_TOKENS,
-        )
-        summary = _to_simplified_chinese(_strip_required_completion_marker(response, SUMMARY_COMPLETE_MARKER))
-        _validate_summary_article(summary, response)
-        return GeneratedSummary(summary, response)
+    transcript_token_limit = int(
+        settings.get("summary_transcript_token_limit", DEFAULT_SUMMARY_TRANSCRIPT_TOKEN_LIMIT)
+    )
+    estimated_transcript_tokens = _estimate_transcript_tokens(transcript_text)
+    if estimated_transcript_tokens >= transcript_token_limit:
+        raise TranscriptTokenLimitError(estimated_transcript_tokens, transcript_token_limit)
 
-    chunk_summaries = []
-    evidence_prompt = _load_prompt(SUMMARY_EVIDENCE_PROMPT_PATH)
-    for index, chunk in enumerate(chunks, start=1):
-        response = _openai_request(
-            [
-                {
-                    "role": "system",
-                    "content": evidence_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": f"视频标题：{video_title}\n第 {index}/{len(chunks)} 段 transcript：\n\n{chunk}",
-                },
-            ],
-            settings,
-            max_tokens=1600,
-        )
-        chunk_summary = _strip_required_completion_marker(response, EVIDENCE_COMPLETE_MARKER)
-        chunk_summaries.append(_to_simplified_chinese(chunk_summary))
+    article_prompt = _load_prompt(SUMMARY_ARTICLE_PROMPT_PATH)
     response = _openai_request(
         [
             {
@@ -557,20 +513,22 @@ def summarize_transcript(
                 "role": "user",
                 "content": (
                     f"播放列表：{playlist_name}\n视频标题：{video_title}\n\n"
-                    "下面是从同一 transcript 逐段提取并合并的证据表；它是最终文章的唯一事实来源。"
-                    "请基于这些证据生成文章，不要补充证据表之外的内容：\n\n"
-                    + "\n\n".join(chunk_summaries)
+                    "请根据下面的 transcript 输出文章：\n\n"
+                    f"{transcript_text}"
                 ),
             },
         ],
         settings,
-        max_tokens=SUMMARY_ARTICLE_MAX_TOKENS,
+        max_output_tokens=int(
+            settings.get(
+                "summary_article_max_output_tokens",
+                DEFAULT_SUMMARY_ARTICLE_MAX_OUTPUT_TOKENS,
+            )
+        ),
     )
-    final_summary = _to_simplified_chinese(
-        _strip_required_completion_marker(response, SUMMARY_COMPLETE_MARKER)
-    )
-    _validate_summary_article(final_summary, response)
-    return GeneratedSummary(final_summary, response)
+    summary = _to_simplified_chinese(_strip_required_completion_marker(response, SUMMARY_COMPLETE_MARKER))
+    _validate_summary_article(summary, response)
+    return GeneratedSummary(summary, response)
 
 
 def _parse_retry_datetime(value: Any) -> datetime | None:
@@ -600,7 +558,7 @@ def _retry_delay_for_summary_error(exc: Exception, failure_index: int) -> int:
 
 
 def _is_non_retryable_summary_error(exc: Exception) -> bool:
-    if isinstance(exc, (ConfigurationError, PolicyModelResponseError)):
+    if isinstance(exc, (ConfigurationError, PolicyModelResponseError, TranscriptTokenLimitError)):
         return True
     message = str(exc).lower()
     return any(marker in message for marker in NON_RETRYABLE_SUMMARY_ERROR_MARKERS)
@@ -636,6 +594,12 @@ def _summary_failure_metadata(exc: Exception) -> dict[str, Any]:
         if exc.usage:
             payload["response_usage"] = exc.usage
         return payload
+    if isinstance(exc, TranscriptTokenLimitError):
+        return {
+            "failure_kind": exc.failure_kind,
+            "estimated_transcript_tokens": exc.estimated_transcript_tokens,
+            "transcript_token_limit": exc.transcript_token_limit,
+        }
     if isinstance(exc, ConfigurationError):
         return {"failure_kind": "configuration_error"}
     if is_transient_network_error(exc):
@@ -677,7 +641,7 @@ def _summary_format_warnings(summary_text: str, transcript_text: str) -> list[st
 def summarize_transcript_with_retries(
     transcript_text: str,
     video_title: str,
-    settings: dict[str, str],
+    settings: dict[str, Any],
     playlist_name: str,
     *,
     existing_retry: dict[str, Any] | None = None,
@@ -688,7 +652,7 @@ def summarize_transcript_with_retries(
     clock: Callable[[], datetime] = beijing_now,
     sleep_fn: Callable[[int], None] = time.sleep,
     summarize_fn: Callable[
-        [str, str, dict[str, str], str],
+        [str, str, dict[str, Any], str],
         str | GeneratedSummary,
     ] = summarize_transcript,
 ) -> tuple[str | None, dict[str, Any]]:

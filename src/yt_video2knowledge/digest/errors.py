@@ -14,6 +14,21 @@ class MissingDependencyError(DigestError):
 class ConfigurationError(DigestError):
     """Raised when runtime configuration is incomplete."""
 
+
+class TranscriptTokenLimitError(DigestError):
+    """Raised before generation when a transcript exceeds the configured token limit."""
+
+    failure_kind = "transcript_token_limit"
+
+    def __init__(self, estimated_transcript_tokens: int, transcript_token_limit: int) -> None:
+        super().__init__(
+            "Transcript estimated token count "
+            f"{estimated_transcript_tokens} must be below {transcript_token_limit}"
+        )
+        self.estimated_transcript_tokens = estimated_transcript_tokens
+        self.transcript_token_limit = transcript_token_limit
+
+
 class ExternalCommandError(DigestError):
     """Raised when an external command fails."""
 
